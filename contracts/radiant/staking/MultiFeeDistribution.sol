@@ -528,14 +528,6 @@ contract MultiFeeDistribution is IMultiFeeDistribution, Initializable, PausableU
 	 * @dev Locked tokens cannot be withdrawn for defaultLockDuration and are eligible to receive rewards.
 	 */
 	function stake(uint256 amount, address onBehalfOf, uint256 typeIndex) external override {
-		// Exceptional case is
-		// - User locked, default index is 1
-		// - User set default index as 0
-		// - User unlocked all
-		// - User locks again, default index is reset to 1
-		if (defaultLockIndex[onBehalfOf] == 0 && userLocks[onBehalfOf].length == 0) {
-			defaultLockIndex[onBehalfOf] = DEFAULT_LOCK_INDEX;
-		}
 		_stake(amount, onBehalfOf, typeIndex, false);
 	}
 
@@ -848,6 +840,12 @@ contract MultiFeeDistribution is IMultiFeeDistribution, Initializable, PausableU
 				_notifyReward(token, unseen);
 			}
 		}
+	}
+
+	function onUpgrade() public {}
+
+	function setLookback(uint256 _lookback) public onlyOwner {
+		rewardsLookback = _lookback;
 	}
 
 	/**

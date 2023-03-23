@@ -313,4 +313,14 @@ contract BalancerPoolHelper is IBalancerPoolHelper, Initializable, OwnableUpgrad
 	function setLockZap(address _lockZap) external onlyOwner {
 		lockZap = _lockZap;
 	}
+
+	function getSwapFeePercentage() public onlyOwner returns (uint256 fee) {
+		IWeightedPool pool = IWeightedPool(lpTokenAddr);
+		fee = pool.getSwapFeePercentage();
+	}
+
+	function setSwapFeePercentage(uint256 _fee) public onlyOwner {
+		IWeightedPool pool = IWeightedPool(lpTokenAddr);
+		pool.setSwapFeePercentage(_fee);
+	}
 }
