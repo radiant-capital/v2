@@ -11,9 +11,8 @@ import "@uniswap/v3-core/contracts/UniswapV3Factory.sol";
 
 import "../../dependencies/openzeppelin/upgradeability/Initializable.sol";
 import "../../dependencies/openzeppelin/upgradeability/OwnableUpgradeable.sol";
-import "../../dependencies/openzeppelin/upgradeability/PausableUpgradeable.sol";
 
-contract UniV3TwapOracle is Initializable, PausableUpgradeable, BaseOracle {
+contract UniV3TwapOracle is Initializable, BaseOracle {
 	using SafeMath for uint256;
 
 	/// @notice Uniswap V3 pool address
@@ -49,6 +48,9 @@ contract UniV3TwapOracle is Initializable, PausableUpgradeable, BaseOracle {
 		address _ethChainlinkFeed,
 		uint32 _lookbackSecs
 	) external initializer {
+		require(_pair != address(0), "pair is 0 address");
+		require(_rdnt != address(0), "rdnt is 0 address");
+		require(_ethChainlinkFeed != address(0), "ethChainlinkFeed is 0 address");
 		pool = IUniswapV3Pool(_pair);
 		token0 = IERC20Metadata(pool.token0());
 		token1 = IERC20Metadata(pool.token1());
@@ -59,7 +61,6 @@ contract UniV3TwapOracle is Initializable, PausableUpgradeable, BaseOracle {
 		lookbackSecs = _lookbackSecs;
 
 		priceInToken0 = false;
-		__Pausable_init();
 		__BaseOracle_init(_rdnt, _ethChainlinkFeed);
 	}
 
@@ -152,13 +153,5 @@ contract UniV3TwapOracle is Initializable, PausableUpgradeable, BaseOracle {
 		returns (uint80 roundId, int256 answer, uint256 startedAt, uint256 updatedAt, uint80 answeredInRound)
 	{
 		return (0, int256(getPrecisePrice()), 0, block.timestamp, 0);
-	}
-
-	function pause() external onlyOwner {
-		_pause();
-	}
-
-	function unpause() external onlyOwner {
-		_unpause();
 	}
 }

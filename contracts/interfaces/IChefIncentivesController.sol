@@ -46,4 +46,6 @@ interface IChefIncentivesController {
 	function claimAll(address _user) external;
 
 	function claimBounty(address _user, bool _execute) external returns (bool issueBaseBounty);
+
+	function setEligibilityExempt(address _address, bool _value) external;
 }

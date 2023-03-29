@@ -18,6 +18,8 @@ contract ManualOracle is Initializable, BaseOracle {
 	 * @param _ethChainlinkFeed chainlink price feed for ETH.
 	 */
 	function initialize(address _rdnt, address _ethChainlinkFeed) external initializer {
+		require(_rdnt != address(0), "rdnt is 0 address");
+		require(_ethChainlinkFeed != address(0), "ethChainlinkFeed is 0 address");
 		__BaseOracle_init(_rdnt, _ethChainlinkFeed);
 	}
 

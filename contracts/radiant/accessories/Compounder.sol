@@ -98,6 +98,7 @@ contract Compounder is OwnableUpgradeable, PausableUpgradeable {
 	}
 
 	function setBountyManager(address _manager) external onlyOwner {
+		require(_manager != address(0), "bountyManager is 0 address");
 		bountyManager = _manager;
 	}
 

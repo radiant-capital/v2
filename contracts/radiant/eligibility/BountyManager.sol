@@ -61,6 +61,7 @@ contract BountyManager is Initializable, OwnableUpgradeable, PausableUpgradeable
 	event BountyBoosterUpdated(uint256 _newVal);
 	event SlippageLimitUpdated(uint256 _newVal);
 	event BountyReserveEmpty(uint256 _bal);
+	event WhitelistActiveChanged(bool isActive);
 
 	/**
 	 * @notice Initialize
@@ -347,6 +348,7 @@ contract BountyManager is Initializable, OwnableUpgradeable, PausableUpgradeable
 	}
 
 	function setSlippageLimit(uint256 _newVal) external onlyOwner {
+		require(_newVal <= 10000, "Invalid slippage limit");
 		slippageLimit = _newVal;
 		emit SlippageLimitUpdated(_newVal);
 	}
@@ -367,6 +369,7 @@ contract BountyManager is Initializable, OwnableUpgradeable, PausableUpgradeable
 
 	function changeWL(bool status) external onlyOwner {
 		whitelistActive = status;
+		emit WhitelistActiveChanged(status);
 	}
 
 	function pause() public onlyOwner {

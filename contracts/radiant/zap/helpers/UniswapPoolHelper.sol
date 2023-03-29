@@ -18,6 +18,7 @@ import "../../../interfaces/IMultiFeeDistribution.sol";
 import "../../../interfaces/IWETH.sol";
 import "../../../interfaces/ILendingPool.sol";
 import "../../../interfaces/IPoolHelper.sol";
+import "../../../interfaces/IERC20DetailedBytes.sol";
 
 contract UniswapPoolHelper is Initializable, OwnableUpgradeable, DustRefunder {
 	using SafeERC20 for IERC20;
@@ -147,15 +148,19 @@ contract UniswapPoolHelper is Initializable, OwnableUpgradeable, DustRefunder {
 	}
 
 	function setLiquidityZap(address _liquidityZap) external onlyOwner {
+		require(_liquidityZap != address(0), "LiquidityZap can't be 0 address");
 		liquidityZap = ILiquidityZap(_liquidityZap);
 	}
 
 	function setLockZap(address _lockZap) external onlyOwner {
+		require(_lockZap != address(0), "LockZap can't be 0 address");
 		lockZap = _lockZap;
 	}
 
 	function getPrice() public view returns (uint256 priceInEth) {
-		// TODO: look at reserves
-		priceInEth = 7500;
+		(uint256 rdnt, uint256 weth, ) = getReserves();
+		if (rdnt > 0) {
+			priceInEth = weth.mul(10 ** 8).div(rdnt);
+		}
 	}
 }

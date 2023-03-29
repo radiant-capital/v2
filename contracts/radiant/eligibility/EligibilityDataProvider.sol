@@ -103,7 +103,6 @@ contract EligibilityDataProvider is OwnableUpgradeable {
 		requiredDepositRatio = 500;
 		priceToleranceRatio = 9000;
 		__Ownable_init();
-
 	}
 
 	/********************** Setters ***********************/
@@ -113,6 +112,7 @@ contract EligibilityDataProvider is OwnableUpgradeable {
 	 * @param _chef address.
 	 */
 	function setChefIncentivesController(IChefIncentivesController _chef) external onlyOwner {
+		require(address(_chef) != address(0), "chef is 0 address");
 		chef = _chef;
 		emit ChefIncentivesControllerUpdated(_chef);
 	}
@@ -173,7 +173,7 @@ contract EligibilityDataProvider is OwnableUpgradeable {
 			middleFeeDistribution.getMultiFeeDistributionAddress()
 		);
 		(, , uint256 lockedLP, , ) = multiFeeDistribution.lockedBalances(user);
-		return _lockedUsdValue(lockedLP, 0);
+		return _lockedUsdValue(lockedLP);
 	}
 
 	/**
@@ -234,21 +234,13 @@ contract EligibilityDataProvider is OwnableUpgradeable {
 			lastEligibleTimestamp = lpLockData[i].unlockTime;
 			lockedLP = lockedLP + lpLockData[i].amount;
 
-			if (_lockedUsdValue(lockedLP, 0) >= requiredValue) {
+			if (_lockedUsdValue(lockedLP) >= requiredValue) {
 				break;
 			}
 		}
 	}
 
 	/********************** Operate functions ***********************/
-
-	/**
-	 * @notice Update token price
-	 */
-	function updatePrice() public {
-		priceProvider.update();
-	}
-
 	/**
 	 * @notice Refresh token amount for eligibility
 	 * @param user's address
@@ -257,8 +249,6 @@ contract EligibilityDataProvider is OwnableUpgradeable {
 		require(msg.sender == address(chef), "Can only be called by CIC");
 		assert(user != address(0));
 
-		updatePrice();
-
 		bool currentEligble = isEligibleForRewards(user);
 		if (currentEligble && disqualifiedTime[user] != 0) {
 			disqualifiedTime[user] = 0;
@@ -266,21 +256,21 @@ contract EligibilityDataProvider is OwnableUpgradeable {
 		lastEligibleStatus[user] = currentEligble;
 	}
 
+	/**
+	 * @notice Update token price
+	 */
+	function updatePrice() public {
+		priceProvider.update();
+	}
+
 	/********************** Internal functions ***********************/
 
 	/**
 	 * @notice Returns locked RDNT and LP token value in eth
 	 * @param lockedLP is locked lp amount
-	 * @param lockedRdnt is locked RDNT amount
 	 */
-	function _lockedUsdValue(uint256 lockedLP, uint256 lockedRdnt) internal view returns (uint256) {
-		uint256 rdntPrice = priceProvider.getTokenPriceUsd();
+	function _lockedUsdValue(uint256 lockedLP) internal view returns (uint256) {
 		uint256 lpPrice = priceProvider.getLpTokenPriceUsd();
-
-		uint256 userRdntValueUsd = lockedRdnt.mul(rdntPrice).div(10 ** 18);
-		uint256 userLpValueUsd = lockedLP.mul(lpPrice).div(10 ** 18);
-
-		uint256 usdLockedVal = userRdntValueUsd.add(userLpValueUsd);
-		return usdLockedVal;
+		return lockedLP.mul(lpPrice).div(10 ** 18);
 	}
 }

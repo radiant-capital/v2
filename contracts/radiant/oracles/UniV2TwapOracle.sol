@@ -63,14 +63,20 @@ contract UniV2TwapOracle is Initializable, BaseOracle {
 		uint256 _consultLeniency,
 		bool _allowStaleConsults
 	) external initializer {
+		require(_pair != address(0), "pair is 0 address");
+		require(_rdnt != address(0), "rdnt is 0 address");
+		require(_ethChainlinkFeed != address(0), "ethChainlinkFeed is 0 address");
+
 		pair = IUniswapV2Pair(_pair);
 		token0 = pair.token0();
 		token1 = pair.token1();
+
 		price0CumulativeLast = pair.price0CumulativeLast(); // Fetch the current accumulated price value (1 / 0)
 		price1CumulativeLast = pair.price1CumulativeLast(); // Fetch the current accumulated price value (0 / 1)
 		uint112 reserve0;
 		uint112 reserve1;
 		(reserve0, reserve1, blockTimestampLast) = pair.getReserves();
+
 		require(reserve0 != 0 && reserve1 != 0, "NO_RESERVES"); // Ensure that there's liquidity in the pair
 		require(_period >= 10, "PERIOD_BELOW_MIN"); // Ensure period has a min time
 
@@ -143,10 +149,7 @@ contract UniV2TwapOracle is Initializable, BaseOracle {
 		uint32 timeElapsed = blockTimestamp - blockTimestampLast; // Overflow is desired
 
 		// Ensure that the price is not stale
-		require(
-			(timeElapsed < (period + consultLeniency)) || allowStaleConsults,
-			"PRICE_IS_STALE_CALL_UPDATE"
-		);
+		require((timeElapsed < (period + consultLeniency)) || allowStaleConsults, "PRICE_IS_STALE_CALL_UPDATE");
 
 		if (_token == token0) {
 			amountOut = price0Average.mul(_amountIn).decode144();

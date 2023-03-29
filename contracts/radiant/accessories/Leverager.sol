@@ -6,11 +6,12 @@ import "@openzeppelin/contracts/utils/math/SafeMath.sol";
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
-import "@openzeppelin/contracts-upgradeable/access/OwnableUpgradeable.sol";
+import "@openzeppelin/contracts/access/Ownable.sol";
 
 import "../../interfaces/ILendingPool.sol";
 import "../../interfaces/IEligibilityDataProvider.sol";
 import "../../interfaces/IChainlinkAggregator.sol";
+import "../../interfaces/IChefIncentivesController.sol";
 import "../../interfaces/ILockZap.sol";
 import "../../interfaces/IAaveOracle.sol";
 import "../../interfaces/IWETH.sol";
@@ -18,7 +19,7 @@ import "../../interfaces/IWETH.sol";
 /// @title Leverager Contract
 /// @author Radiant
 /// @dev All function calls are currently implemented without side effects
-contract Leverager is OwnableUpgradeable {
+contract Leverager is Ownable {
 	using SafeMath for uint256;
 	using SafeERC20 for IERC20;
 
@@ -36,6 +37,9 @@ contract Leverager is OwnableUpgradeable {
 
 	/// @notice LockZap contract address
 	ILockZap public lockZap;
+
+	/// @notice ChefIncentivesController contract address
+	IChefIncentivesController public cic;
 
 	/// @notice Wrapped ETH contract address
 	IWETH public weth;
@@ -65,28 +69,30 @@ contract Leverager is OwnableUpgradeable {
 	 * @param _feePercent leveraging fee ratio.
 	 * @param _treasury address.
 	 */
-	function initialize(
+	constructor(
 		ILendingPool _lendingPool,
 		IEligibilityDataProvider _rewardEligibleDataProvider,
 		IAaveOracle _aaveOracle,
 		ILockZap _lockZap,
+		IChefIncentivesController _cic,
 		IWETH _weth,
 		uint256 _feePercent,
 		address _treasury
-	) public initializer {
+	) {
 		require(address(_lendingPool) != (address(0)), "Not a valid address");
 		require(address(_rewardEligibleDataProvider) != (address(0)), "Not a valid address");
 		require(address(_aaveOracle) != (address(0)), "Not a valid address");
 		require(address(_lockZap) != (address(0)), "Not a valid address");
+		require(address(_cic) != (address(0)), "Not a valid address");
 		require(address(_weth) != (address(0)), "Not a valid address");
 		require(_treasury != address(0), "Not a valid address");
+		require(_feePercent <= 1e4, "Invalid ratio");
 
-		__Ownable_init();
-		
 		lendingPool = _lendingPool;
 		eligibilityDataProvider = _rewardEligibleDataProvider;
 		lockZap = _lockZap;
 		aaveOracle = _aaveOracle;
+		cic = _cic;
 		weth = _weth;
 		feePercent = _feePercent;
 		treasury = _treasury;
@@ -121,6 +127,7 @@ contract Leverager is OwnableUpgradeable {
 	 * @param _treasury address
 	 */
 	function setTreasury(address _treasury) external onlyOwner {
+		require(_treasury != address(0), "treasury is 0 address");
 		treasury = _treasury;
 		emit TreasuryUpdated(_treasury);
 	}
@@ -191,6 +198,8 @@ contract Leverager is OwnableUpgradeable {
 			lendingPool.deposit(asset, amount, msg.sender, referralCode);
 		}
 
+		cic.setEligibilityExempt(msg.sender, true);
+
 		for (uint256 i = 0; i < loopCount; i += 1) {
 			amount = amount.mul(borrowRatio).div(RATIO_DIVISOR);
 			lendingPool.borrow(asset, amount, interestRateMode, referralCode, msg.sender);
@@ -199,6 +208,8 @@ contract Leverager is OwnableUpgradeable {
 			IERC20(asset).safeTransfer(treasury, fee);
 			lendingPool.deposit(asset, amount.sub(fee), msg.sender, referralCode);
 		}
+
+		cic.setEligibilityExempt(msg.sender, false);
 
 		zapWETHWithBorrow(wethToZap(msg.sender), msg.sender);
 	}

@@ -39,6 +39,10 @@ contract BalancerPoolHelper is IBalancerPoolHelper, Initializable, OwnableUpgrad
 		address _vault,
 		IWeightedPoolFactory _poolFactory
 	) external initializer {
+		require(_inTokenAddr != address(0), "inTokenAddr is 0 address");
+		require(_outTokenAddr != address(0), "outTokenAddr is 0 address");
+		require(_wethAddr != address(0), "wethAddr is 0 address");
+		require(_vault != address(0), "vault is 0 address");
 		__Ownable_init();
 		inTokenAddr = _inTokenAddr;
 		outTokenAddr = _outTokenAddr;
@@ -311,6 +315,7 @@ contract BalancerPoolHelper is IBalancerPoolHelper, Initializable, OwnableUpgrad
 	}
 
 	function setLockZap(address _lockZap) external onlyOwner {
+		require(_lockZap != address(0), "lockZap is 0 address");
 		lockZap = _lockZap;
 	}
 

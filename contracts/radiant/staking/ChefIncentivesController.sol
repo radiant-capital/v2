@@ -11,6 +11,7 @@ import "@openzeppelin/contracts-upgradeable/security/PausableUpgradeable.sol";
 
 import "../../interfaces/IMultiFeeDistribution.sol";
 import "../../interfaces/IEligibilityDataProvider.sol";
+import "../../interfaces/ILeverager.sol";
 import "../../interfaces/IOnwardIncentivesController.sol";
 import "../../interfaces/IAToken.sol";
 import "../../interfaces/IMiddleFeeDistribution.sol";
@@ -26,7 +27,6 @@ contract ChefIncentivesController is Initializable, PausableUpgradeable, Ownable
 	struct UserInfo {
 		uint256 amount;
 		uint256 rewardDebt;
-		uint256 enterTime;
 		uint256 lastClaimTime;
 	}
 
@@ -113,7 +113,16 @@ contract ChefIncentivesController is Initializable, PausableUpgradeable, Ownable
 
 	IMiddleFeeDistribution public rewardMinter;
 	IEligibilityDataProvider public eligibleDataProvider;
+	ILeverager public leverager;
 	address public bountyManager;
+
+	struct EndingTime {
+		uint256 estimatedTime;
+		uint256 lastUpdatedTime;
+		uint256 updateCadence;
+	}
+
+	EndingTime public endingTime;
 
 	function initialize(
 		address _poolConfigurator,
@@ -137,7 +146,7 @@ contract ChefIncentivesController is Initializable, PausableUpgradeable, Ownable
 		eligibilityEnabled = true;
 	}
 
-	function poolLength() external view returns (uint256) {
+	function poolLength() public view returns (uint256) {
 		return registeredTokens.length;
 	}
 
@@ -269,8 +278,7 @@ contract ChefIncentivesController is Initializable, PausableUpgradeable, Ownable
 	// Update reward variables for all pools
 	function _massUpdatePools() internal {
 		uint256 totalAP = totalAllocPoint;
-		uint256 length = registeredTokens.length;
-		for (uint256 i = 0; i < length; ++i) {
+		for (uint256 i = 0; i < poolLength(); ++i) {
 			_updatePool(poolInfo[registeredTokens[i]], totalAP);
 		}
 		lastAllPoolUpdate = block.timestamp;
@@ -327,7 +335,7 @@ contract ChefIncentivesController is Initializable, PausableUpgradeable, Ownable
 	// Rewards are not received directly, they are minted by the rewardMinter.
 	function claim(address _user, address[] memory _tokens) public whenNotPaused {
 		if (eligibilityEnabled) {
-			checkAndProcessEligibility(_user);
+			checkAndProcessEligibility(_user, true, true);
 		}
 
 		_updateEmissions();
@@ -349,6 +357,8 @@ contract ChefIncentivesController is Initializable, PausableUpgradeable, Ownable
 
 		_mint(_user, pending);
 
+		eligibleDataProvider.updatePrice();
+
 		if (endRewardTime() < block.timestamp + 5 days) {
 			_emitReserveLow();
 		}
@@ -364,8 +374,13 @@ contract ChefIncentivesController is Initializable, PausableUpgradeable, Ownable
 		_getMfd().mint(_user, _amount, true);
 	}
 
-	function setEligibilityExempt(address _contract) public onlyOwner {
-		eligibilityExempt[_contract] = true;
+	function setEligibilityExempt(address _contract, bool _value) public {
+		require(msg.sender == owner() || msg.sender == address(leverager), "!authorized");
+		eligibilityExempt[_contract] = _value;
+	}
+
+	function setLeverager(ILeverager _leverager) external onlyOwner {
+		leverager = _leverager;
 	}
 
 	/********************** Eligibility + Disqualification ***********************/
@@ -382,10 +397,10 @@ contract ChefIncentivesController is Initializable, PausableUpgradeable, Ownable
 		}
 		if (eligibilityEnabled) {
 			eligibleDataProvider.refresh(_user);
-			if (eligibleDataProvider.isEligibleForRewards(_user)) {
+			if (eligibleDataProvider.lastEligibleStatus(_user)) {
 				_handleActionAfterForToken(msg.sender, _user, _balance, _totalSupply);
 			} else {
-				checkAndProcessEligibility(_user);
+				checkAndProcessEligibility(_user, true, false);
 			}
 		} else {
 			_handleActionAfterForToken(msg.sender, _user, _balance, _totalSupply);
@@ -400,7 +415,7 @@ contract ChefIncentivesController is Initializable, PausableUpgradeable, Ownable
 	) internal {
 		PoolInfo storage pool = poolInfo[_token];
 		require(pool.lastRewardTime > 0, "pool doesn't exist");
-		_updateEmissions();
+		// _updateEmissions();
 		_updatePool(pool, totalAllocPoint);
 		UserInfo storage user = userInfo[_token][_user];
 		uint256 amount = user.amount;
@@ -414,9 +429,6 @@ contract ChefIncentivesController is Initializable, PausableUpgradeable, Ownable
 		pool.totalSupply = pool.totalSupply.sub(user.amount);
 		user.amount = _balance;
 		user.rewardDebt = _balance.mul(accRewardPerShare).div(ACC_REWARD_PRECISION);
-		if (user.amount > 0) {
-			user.enterTime = block.timestamp;
-		}
 		pool.totalSupply = pool.totalSupply.add(_balance);
 		if (pool.onwardIncentives != IOnwardIncentivesController(address(0))) {
 			pool.onwardIncentives.handleAction(_token, _user, _balance, _totalSupply);
@@ -434,12 +446,7 @@ contract ChefIncentivesController is Initializable, PausableUpgradeable, Ownable
 	 * @notice Hook for lock update.
 	 * @dev Called by the locking contracts before locking or unlocking happens
 	 */
-	function beforeLockUpdate(address _user) external {
-		require(msg.sender == address(_getMfd()), "!mfd");
-		if (eligibilityEnabled) {
-			checkAndProcessEligibility(_user);
-		}
-	}
+	function beforeLockUpdate(address _user) external {}
 
 	/**
 	 * @notice Hook for lock update.
@@ -448,9 +455,9 @@ contract ChefIncentivesController is Initializable, PausableUpgradeable, Ownable
 	function afterLockUpdate(address _user) external {
 		require(msg.sender == address(_getMfd()), "!MFD");
 		if (eligibilityEnabled) {
-			eligibleDataProvider.updatePrice();
-			if (eligibleDataProvider.isEligibleForRewards(_user)) {
-				for (uint256 i = 0; i < registeredTokens.length; i++) {
+			eligibleDataProvider.refresh(_user);
+			if (eligibleDataProvider.lastEligibleStatus(_user)) {
+				for (uint256 i = 0; i < poolLength(); i++) {
 					uint256 newBal = IERC20(registeredTokens[i]).balanceOf(_user);
 					uint256 registeredBal = userInfo[registeredTokens[i]][_user].amount;
 					if (newBal != 0 && newBal != registeredBal) {
@@ -462,15 +469,16 @@ contract ChefIncentivesController is Initializable, PausableUpgradeable, Ownable
 						);
 					}
 				}
+			} else {
+				checkAndProcessEligibility(_user, true, false);
 			}
-			eligibleDataProvider.refresh(_user);
 		}
 	}
 
 	/********************** Eligibility + Disqualification ***********************/
 
 	function hasEligibleDeposits(address _user) internal view returns (bool hasDeposits) {
-		for (uint256 i = 0; i < registeredTokens.length; i++) {
+		for (uint256 i = 0; i < poolLength(); i++) {
 			UserInfo storage user = userInfo[registeredTokens[i]][_user];
 			if (user.amount != 0) {
 				hasDeposits = true;
@@ -479,8 +487,18 @@ contract ChefIncentivesController is Initializable, PausableUpgradeable, Ownable
 		}
 	}
 
-	function checkAndProcessEligibility(address _user, bool _execute) internal returns (bool issueBaseBounty) {
-		bool isEligible = eligibleDataProvider.isEligibleForRewards(_user);
+	function checkAndProcessEligibility(
+		address _user,
+		bool _execute,
+		bool _refresh
+	) internal returns (bool issueBaseBounty) {
+		bool isEligible;
+		if (_refresh && _execute) {
+			eligibleDataProvider.refresh(_user);
+			isEligible = eligibleDataProvider.lastEligibleStatus(_user);
+		} else {
+			isEligible = eligibleDataProvider.isEligibleForRewards(_user);
+		}
 		bool hasEligDeposits = hasEligibleDeposits(_user);
 		uint256 lastDqTime = eligibleDataProvider.getDqTime(_user);
 		bool alreadyDqd = lastDqTime != 0;
@@ -491,29 +509,26 @@ contract ChefIncentivesController is Initializable, PausableUpgradeable, Ownable
 		if (_execute && issueBaseBounty) {
 			stopEmissionsFor(_user);
 			emit Disqualified(_user);
-			eligibleDataProvider.refresh(_user);
 		}
-	}
-
-	function checkAndProcessEligibility(address _user) internal {
-		checkAndProcessEligibility(_user, true);
 	}
 
 	function claimBounty(address _user, bool _execute) public returns (bool issueBaseBounty) {
 		require(msg.sender == address(bountyManager), "bounty only");
-		issueBaseBounty = checkAndProcessEligibility(_user, _execute);
+		issueBaseBounty = checkAndProcessEligibility(_user, _execute, true);
 	}
 
 	function stopEmissionsFor(address _user) internal {
 		require(eligibilityEnabled, "!EE");
-		require(!eligibleDataProvider.isEligibleForRewards(_user), "user is still eligible");
-		uint256 length = registeredTokens.length;
-		for (uint256 i = 0; i < length; ++i) {
+		// lastEligibleStatus will be fresh from refresh before this call
+		require(!eligibleDataProvider.lastEligibleStatus(_user), "user is still eligible");
+		for (uint256 i = 0; i < poolLength(); ++i) {
 			address token = registeredTokens[i];
 			PoolInfo storage pool = poolInfo[token];
 			UserInfo storage user = userInfo[token][_user];
 
-			_handleActionAfterForToken(token, _user, 0, pool.totalSupply.sub(user.amount));
+			if (user.amount != 0) {
+				_handleActionAfterForToken(token, _user, 0, pool.totalSupply.sub(user.amount));
+			}
 		}
 		eligibleDataProvider.setDqTime(_user, block.timestamp);
 	}
@@ -527,6 +542,10 @@ contract ChefIncentivesController is Initializable, PausableUpgradeable, Ownable
 		uint256 chefReserve = IERC20(rdntToken).balanceOf(address(this));
 		if (_amount > chefReserve) {
 			emit ChefReserveEmpty(chefReserve);
+			// RPS is set to zero
+			// Set to persist to prevent update by _updateEmissions()
+			persistRewardsPerSecond = true;
+			rewardsPerSecond = 0;
 			_pause();
 		} else {
 			IERC20(rdntToken).safeTransfer(_user, _amount);
@@ -536,10 +555,14 @@ contract ChefIncentivesController is Initializable, PausableUpgradeable, Ownable
 
 	/********************** RDNT Reserve Management ***********************/
 
-	function endRewardTime() public view returns (uint256 timestamp) {
+	function endRewardTime() public returns (uint256) {
+		if (endingTime.lastUpdatedTime + endingTime.updateCadence >= block.timestamp) {
+			return endingTime.estimatedTime;
+		}
+
 		uint256 unclaimedRewards = depositedRewards.sub(accountedRewards);
 		uint256 extra = 0;
-		for (uint256 i; i < registeredTokens.length; i++) {
+		for (uint256 i; i < poolLength(); i++) {
 			if (poolInfo[registeredTokens[i]].lastRewardTime <= lastAllPoolUpdate) {
 				continue;
 			} else {
@@ -554,10 +577,17 @@ contract ChefIncentivesController is Initializable, PausableUpgradeable, Ownable
 			}
 		}
 		if (rewardsPerSecond == 0) {
-			timestamp = type(uint256).max;
+			endingTime.estimatedTime = type(uint256).max;
 		} else {
-			timestamp = (unclaimedRewards + extra).div(rewardsPerSecond) + (lastAllPoolUpdate);
+			endingTime.estimatedTime = (unclaimedRewards + extra).div(rewardsPerSecond) + (lastAllPoolUpdate);
 		}
+		endingTime.lastUpdatedTime = block.timestamp;
+		return endingTime.estimatedTime;
+	}
+
+	function setEndingTimeUpdateCadence(uint256 _lapse) external onlyOwner {
+		require(_lapse <= 1 weeks, "cadence too long");
+		endingTime.updateCadence = _lapse;
 	}
 
 	function registerRewardDeposit(uint256 _amount) external onlyOwner {
@@ -570,44 +600,6 @@ contract ChefIncentivesController is Initializable, PausableUpgradeable, Ownable
 
 	function availableRewards() internal view returns (uint256 amount) {
 		return depositedRewards.sub(accountedRewards);
-	}
-
-	/********************** Helper/Convenience Methods ***********************/
-
-	/**
-	 * @notice Claim pending rewards for one or more pools into base claimable.
-	 * @dev Rewards are not transferred, just converted into base claimable.
-	 */
-	function claimToBase(address _user, address[] memory _tokens) public {
-		uint256 _userBaseClaimable = userBaseClaimable[_user];
-
-		// updatePool must be called after calculation of pending rewards
-		// this is because of reward calculation based on eligibility
-		uint256[] memory pending = pendingRewards(_user, _tokens);
-		_updateEmissions();
-		uint256 _totalAllocPoint = totalAllocPoint;
-		for (uint256 i = 0; i < _tokens.length; i++) {
-			require(validRTokens[_tokens[i]], "invalid rtoken");
-			UserInfo storage user = userInfo[_tokens[i]][_user];
-			_userBaseClaimable = _userBaseClaimable.add(pending[i]);
-
-			// Set pending reward to zero
-			PoolInfo storage pool = poolInfo[_tokens[i]];
-			_updatePool(pool, _totalAllocPoint);
-			uint256 newDebt = user.amount.mul(pool.accRewardPerShare).div(ACC_REWARD_PRECISION);
-			user.rewardDebt = newDebt;
-			user.lastClaimTime = block.timestamp;
-		}
-		userBaseClaimable[_user] = _userBaseClaimable;
-	}
-
-	function saveUserRewards(address[] memory _users) public {
-		address[] memory _tokens = registeredTokens;
-		for (uint256 i = 0; i < _users.length; i++) {
-			if (_users[i] != address(0)) {
-				claimToBase(_users[i], _tokens);
-			}
-		}
 	}
 
 	function claimAll(address _user) external {

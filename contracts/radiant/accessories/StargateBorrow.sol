@@ -114,7 +114,6 @@ contract StargateBorrow is OwnableUpgradeable {
 		uint256 _xChainBorrowFeePercent
 	) public initializer {
 		require(address(_router) != (address(0)), "Not a valid address");
-		require(address(_routerETH) != (address(0)), "Not a valid address");
 		require(address(_lendingPool) != (address(0)), "Not a valid address");
 		require(address(_weth) != (address(0)), "Not a valid address");
 		require(_treasury != address(0), "Not a valid address");
@@ -136,6 +135,7 @@ contract StargateBorrow is OwnableUpgradeable {
 	 * @param _daoTreasury DAO Treasury address.
 	 */
 	function setDAOTreasury(address _daoTreasury) external onlyOwner {
+		require(_daoTreasury != address(0), "daoTreasury is 0 address");
 		daoTreasury = _daoTreasury;
 		emit DAOTreasuryUpdated(_daoTreasury);
 	}
@@ -194,7 +194,7 @@ contract StargateBorrow is OwnableUpgradeable {
 	 * @param dstChainId Destination chain id
 	 **/
 	function borrow(address asset, uint256 amount, uint256 interestRateMode, uint16 dstChainId) external payable {
-		if (address(asset) == ETH_ADDRESS) {
+		if (address(asset) == ETH_ADDRESS && address(routerETH) != address(0)) {
 			borrowETH(amount, interestRateMode, dstChainId);
 		} else {
 			lendingPool.borrow(asset, amount, interestRateMode, 0, msg.sender);

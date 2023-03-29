@@ -112,8 +112,8 @@ contract PriceProvider is Initializable, OwnableUpgradeable {
 	}
 
 	function setOracle(address _newOracle) external onlyOwner {
+		require(_newOracle != address(0));
 		oracle = IBaseOracle(_newOracle);
-		require(getTokenPrice() != 0 && getTokenPriceUsd() != 0, "invalid oracle");
 	}
 
 	function setPoolHelper(address _poolHelper) external onlyOwner {

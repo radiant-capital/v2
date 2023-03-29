@@ -10,7 +10,6 @@ import {IVariableDebtToken} from "../interfaces/IVariableDebtToken.sol";
 import {ReserveConfiguration} from "./libraries/configuration/ReserveConfiguration.sol";
 import {UserConfiguration} from "./libraries/configuration/UserConfiguration.sol";
 import {DataTypes} from "./libraries/types/DataTypes.sol";
-import "hardhat/console.sol";
 
 contract AaveProtocolDataProvider {
 	using ReserveConfiguration for DataTypes.ReserveConfigurationMap;
