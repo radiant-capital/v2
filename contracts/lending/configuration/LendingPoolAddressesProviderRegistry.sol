@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: agpl-3.0
+// SPDX-License-Identifier: AGPL-3.0
 pragma solidity 0.8.12;
 
 import "@openzeppelin/contracts/access/Ownable.sol";
@@ -21,16 +21,19 @@ contract LendingPoolAddressesProviderRegistry is Ownable, ILendingPoolAddressesP
 	 * @dev Returns the list of registered addresses provider
 	 * @return The list of addresses provider, potentially containing address(0) elements
 	 **/
-	function getAddressesProvidersList() external view override returns (address[] memory) {
+	function getAddressesProvidersList() external view returns (address[] memory) {
 		address[] memory addressesProvidersList = _addressesProvidersList;
 
 		uint256 maxLength = addressesProvidersList.length;
 
 		address[] memory activeProviders = new address[](maxLength);
 
-		for (uint256 i = 0; i < maxLength; i++) {
+		for (uint256 i = 0; i < maxLength; ) {
 			if (_addressesProviders[addressesProvidersList[i]] > 0) {
 				activeProviders[i] = addressesProvidersList[i];
+			}
+			unchecked {
+				i++;
 			}
 		}
 
@@ -42,7 +45,7 @@ contract LendingPoolAddressesProviderRegistry is Ownable, ILendingPoolAddressesP
 	 * @param provider The address of the new LendingPoolAddressesProvider
 	 * @param id The id for the new LendingPoolAddressesProvider, referring to the market it belongs to
 	 **/
-	function registerAddressesProvider(address provider, uint256 id) external override onlyOwner {
+	function registerAddressesProvider(address provider, uint256 id) external onlyOwner {
 		require(id != 0, Errors.LPAPR_INVALID_ADDRESSES_PROVIDER_ID);
 
 		_addressesProviders[provider] = id;
@@ -54,7 +57,7 @@ contract LendingPoolAddressesProviderRegistry is Ownable, ILendingPoolAddressesP
 	 * @dev Removes a LendingPoolAddressesProvider from the list of registered addresses provider
 	 * @param provider The LendingPoolAddressesProvider address
 	 **/
-	function unregisterAddressesProvider(address provider) external override onlyOwner {
+	function unregisterAddressesProvider(address provider) external onlyOwner {
 		require(_addressesProviders[provider] > 0, Errors.LPAPR_PROVIDER_NOT_REGISTERED);
 		_addressesProviders[provider] = 0;
 		emit AddressesProviderUnregistered(provider);
@@ -64,16 +67,19 @@ contract LendingPoolAddressesProviderRegistry is Ownable, ILendingPoolAddressesP
 	 * @dev Returns the id on a registered LendingPoolAddressesProvider
 	 * @return The id or 0 if the LendingPoolAddressesProvider is not registered
 	 */
-	function getAddressesProviderIdByAddress(address addressesProvider) external view override returns (uint256) {
+	function getAddressesProviderIdByAddress(address addressesProvider) external view returns (uint256) {
 		return _addressesProviders[addressesProvider];
 	}
 
 	function _addToAddressesProvidersList(address provider) internal {
 		uint256 providersCount = _addressesProvidersList.length;
 
-		for (uint256 i = 0; i < providersCount; i++) {
+		for (uint256 i = 0; i < providersCount; ) {
 			if (_addressesProvidersList[i] == provider) {
 				return;
+			}
+			unchecked {
+				i++;
 			}
 		}
 

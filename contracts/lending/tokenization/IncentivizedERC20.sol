@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: agpl-3.0
+// SPDX-License-Identifier: AGPL-3.0
 pragma solidity 0.8.12;
 
 import {Context} from "../../dependencies/openzeppelin/contracts/Context.sol";
@@ -38,35 +38,35 @@ abstract contract IncentivizedERC20 is Context, IERC20, IERC20Metadata {
 	/**
 	 * @return The name of the token
 	 **/
-	function name() public view override returns (string memory) {
+	function name() public view returns (string memory) {
 		return _name;
 	}
 
 	/**
 	 * @return The symbol of the token
 	 **/
-	function symbol() public view override returns (string memory) {
+	function symbol() public view returns (string memory) {
 		return _symbol;
 	}
 
 	/**
 	 * @return The decimals of the token
 	 **/
-	function decimals() public view override returns (uint8) {
+	function decimals() public view returns (uint8) {
 		return _decimals;
 	}
 
 	/**
 	 * @return The total supply of the token
 	 **/
-	function totalSupply() public view virtual override returns (uint256) {
+	function totalSupply() public view virtual returns (uint256) {
 		return _totalSupply;
 	}
 
 	/**
 	 * @return The balance of the token
 	 **/
-	function balanceOf(address account) public view virtual override returns (uint256) {
+	function balanceOf(address account) public view virtual returns (uint256) {
 		return _balances[account];
 	}
 
@@ -82,7 +82,7 @@ abstract contract IncentivizedERC20 is Context, IERC20, IERC20Metadata {
 	 * @param amount The amount of tokens being transferred
 	 * @return `true` if the transfer succeeds, `false` otherwise
 	 **/
-	function transfer(address recipient, uint256 amount) public virtual override returns (bool) {
+	function transfer(address recipient, uint256 amount) public virtual returns (bool) {
 		_transfer(_msgSender(), recipient, amount);
 		emit Transfer(_msgSender(), recipient, amount);
 		return true;
@@ -94,7 +94,7 @@ abstract contract IncentivizedERC20 is Context, IERC20, IERC20Metadata {
 	 * @param spender The user allowed to spend the owner's tokens
 	 * @return The amount of owner's tokens spender is allowed to spend
 	 **/
-	function allowance(address owner, address spender) public view virtual override returns (uint256) {
+	function allowance(address owner, address spender) public view virtual returns (uint256) {
 		return _allowances[owner][spender];
 	}
 
@@ -103,7 +103,7 @@ abstract contract IncentivizedERC20 is Context, IERC20, IERC20Metadata {
 	 * @param spender The user allowed to spend _msgSender() tokens
 	 * @return `true`
 	 **/
-	function approve(address spender, uint256 amount) public virtual override returns (bool) {
+	function approve(address spender, uint256 amount) public virtual returns (bool) {
 		_approve(_msgSender(), spender, amount);
 		return true;
 	}
@@ -115,7 +115,7 @@ abstract contract IncentivizedERC20 is Context, IERC20, IERC20Metadata {
 	 * @param amount The amount of tokens being transferred
 	 * @return `true` if the transfer succeeds, `false` otherwise
 	 **/
-	function transferFrom(address sender, address recipient, uint256 amount) public virtual override returns (bool) {
+	function transferFrom(address sender, address recipient, uint256 amount) public virtual returns (bool) {
 		_transfer(sender, recipient, amount);
 		_approve(
 			sender,

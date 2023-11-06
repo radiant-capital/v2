@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: agpl-3.0
+// SPDX-License-Identifier: AGPL-3.0
 pragma solidity 0.8.12;
 
 import "@openzeppelin/contracts/utils/math/SafeMath.sol";
@@ -12,8 +12,8 @@ abstract contract FlashLoanReceiverBase is IFlashLoanReceiver {
 	using SafeERC20 for IERC20;
 	using SafeMath for uint256;
 
-	ILendingPoolAddressesProvider public immutable override ADDRESSES_PROVIDER;
-	ILendingPool public immutable override LENDING_POOL;
+	ILendingPoolAddressesProvider public immutable ADDRESSES_PROVIDER;
+	ILendingPool public immutable LENDING_POOL;
 
 	constructor(ILendingPoolAddressesProvider provider) {
 		ADDRESSES_PROVIDER = provider;

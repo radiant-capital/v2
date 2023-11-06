@@ -1,25 +1,22 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.12;
 
-import "@openzeppelin/contracts/utils/math/SafeMath.sol";
-import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
-import "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
-import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
-import "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
-import "@openzeppelin/contracts-upgradeable/access/OwnableUpgradeable.sol";
-import "@openzeppelin/contracts-upgradeable/security/PausableUpgradeable.sol";
+import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
+import {Initializable} from "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
+import {OwnableUpgradeable} from "@openzeppelin/contracts-upgradeable/access/OwnableUpgradeable.sol";
+import {PausableUpgradeable} from "@openzeppelin/contracts-upgradeable/security/PausableUpgradeable.sol";
 
-import "../../interfaces/IMultiFeeDistribution.sol";
-import "../../interfaces/IEligibilityDataProvider.sol";
-import "../../interfaces/ILeverager.sol";
-import "../../interfaces/IOnwardIncentivesController.sol";
-import "../../interfaces/IAToken.sol";
-import "../../interfaces/IMiddleFeeDistribution.sol";
+import {RecoverERC20} from "../libraries/RecoverERC20.sol";
+import {IMultiFeeDistribution} from "../../interfaces/IMultiFeeDistribution.sol";
+import {IEligibilityDataProvider} from "../../interfaces/IEligibilityDataProvider.sol";
+import {IOnwardIncentivesController} from "../../interfaces/IOnwardIncentivesController.sol";
 
-// based on the Sushi MasterChef
-// https://github.com/sushiswap/sushiswap/blob/master/contracts/MasterChef.sol
-contract ChefIncentivesController is Initializable, PausableUpgradeable, OwnableUpgradeable {
-	using SafeMath for uint256;
+/// @title ChefIncentivesController Contract
+/// @author Radiant
+/// based on the Sushi MasterChef
+///	https://github.com/sushiswap/sushiswap/blob/master/contracts/MasterChef.sol
+contract ChefIncentivesController is Initializable, PausableUpgradeable, OwnableUpgradeable, RecoverERC20 {
 	using SafeERC20 for IERC20;
 
 	// Info of each user.
@@ -45,6 +42,23 @@ contract ChefIncentivesController is Initializable, PausableUpgradeable, Ownable
 		uint128 rewardsPerSecond;
 	}
 
+	// Info about ending time of reward emissions
+	struct EndingTime {
+		uint256 estimatedTime;
+		uint256 lastUpdatedTime;
+		uint256 updateCadence;
+	}
+
+	enum EligibilityModes {
+		// check on all rToken transfers
+		FULL,
+		// only check on Claim
+		LIMITED,
+		// 0 eligibility functions run
+		DISABLED
+	}
+
+	/********************** Events ***********************/
 	// Emitted when rewardPerSecond is updated
 	event RewardsPerSecondUpdated(uint256 indexed rewardsPerSecond, bool persist);
 
@@ -52,17 +66,76 @@ contract ChefIncentivesController is Initializable, PausableUpgradeable, Ownable
 
 	event EmissionScheduleAppended(uint256[] startTimeOffsets, uint256[] rewardsPerSeconds);
 
-	event ChefReserveLow(uint256 _balance);
-
-	event ChefReserveEmpty(uint256 _balance);
+	event ChefReserveLow(uint256 indexed _balance);
 
 	event Disqualified(address indexed user);
+
+	event OnwardIncentivesUpdated(address indexed _token, IOnwardIncentivesController _incentives);
+
+	event BountyManagerUpdated(address indexed _bountyManager);
+
+	event EligibilityModeUpdated(EligibilityModes indexed _newVal);
+
+	event BatchAllocPointsUpdated(address[] _tokens, uint256[] _allocPoints);
+
+	event AuthorizedContractUpdated(address _contract, bool _authorized);
+
+	event EndingTimeUpdateCadence(uint256 indexed _lapse);
+
+	event RewardDeposit(uint256 indexed _amount);
+
+	/********************** Errors ***********************/
+	error AddressZero();
+
+	error UnknownPool();
+
+	error PoolExists();
+
+	error AlreadyStarted();
+
+	error NotAllowed();
+
+	error ArrayLengthMismatch();
+
+	error NotAscending();
+
+	error ExceedsMaxInt();
+
+	error InvalidStart();
+
+	error InvalidRToken();
+
+	error InsufficientPermission();
+
+	error AuthorizationAlreadySet();
+
+	error NotMFD();
+
+	error NotWhitelisted();
+
+	error BountyOnly();
+
+	error NotEligible();
+
+	error CadenceTooLong();
+
+	error EligibleRequired();
+
+	error NotRTokenOrMfd();
+
+	error OutOfRewards();
+
+	error NothingToVest();
+
+	error DuplicateSchedule();
+
+	error ValueZero();
 
 	// multiplier for reward calc
 	uint256 private constant ACC_REWARD_PRECISION = 1e12;
 
 	// Data about the future reward rates. emissionSchedule stored in chronological order,
-	// whenever the number of blocks since the start block exceeds the next block offset a new
+	// whenever the duration since the start timestamp exceeds the next timestamp offset a new
 	// reward rate is applied.
 	EmissionPoint[] public emissionSchedule;
 
@@ -89,7 +162,7 @@ contract ChefIncentivesController is Initializable, PausableUpgradeable, Ownable
 	mapping(address => PoolInfo) public poolInfo;
 	mapping(address => bool) private validRTokens;
 
-	// Total allocation poitns. Must be the sum of all allocation points in all pools.
+	// Total allocation points. Must be the sum of all allocation points in all pools.
 	uint256 public totalAllocPoint;
 
 	// token => user => Info of each user that stakes LP tokens.
@@ -98,118 +171,188 @@ contract ChefIncentivesController is Initializable, PausableUpgradeable, Ownable
 	// user => base claimable balance
 	mapping(address => uint256) public userBaseClaimable;
 
-	// MFD, bounties, AC, middlefee
+	// MFD, bounties, AC
 	mapping(address => bool) public eligibilityExempt;
 
 	// The block number when reward mining starts.
 	uint256 public startTime;
 
-	bool public eligibilityEnabled;
+	// Option for eligibility
+	EligibilityModes public eligibilityMode;
 
+	// Address for PoolConfigurator
 	address public poolConfigurator;
+
+	// Amount of deposited rewards
 	uint256 public depositedRewards;
+
+	// Amount of accumulated rewards
 	uint256 public accountedRewards;
+
+	// Timestamp when all pools updated
 	uint256 public lastAllPoolUpdate;
 
-	IMiddleFeeDistribution public rewardMinter;
+	// MultiFeeDistribution contract
+	IMultiFeeDistribution public mfd;
+
+	// Eligiblity Data Provider contract
 	IEligibilityDataProvider public eligibleDataProvider;
-	ILeverager public leverager;
+
+	// Bounty Manager contract
 	address public bountyManager;
 
-	struct EndingTime {
-		uint256 estimatedTime;
-		uint256 lastUpdatedTime;
-		uint256 updateCadence;
-	}
-
+	// Info of reward emission end time
 	EndingTime public endingTime;
 
+	// Contracts that are authorized to handle r/vdToken actions without triggering elgiibility checks
+	mapping(address => bool) public authorizedContracts;
+
+	// Mapping of addresses that are whitelisted to perform
+	mapping(address => bool) public whitelist;
+	// Flag to quickly enable/disable whitelisting
+	bool public whitelistActive;
+
+	// The one and only RDNT token
+	address public rdntToken;
+
+	modifier isWhitelisted() {
+		if (whitelistActive) {
+			if (!whitelist[msg.sender] && msg.sender != address(this)) revert NotWhitelisted();
+		}
+		_;
+	}
+
+	constructor() {
+		_disableInitializers();
+	}
+
+	/**
+	 * @notice Initializer
+	 * @param _poolConfigurator Pool configurator address
+	 * @param _eligibleDataProvider Eligibility Data provider address
+	 * @param _mfd MultiFeeDistribution contract
+	 * @param _rewardsPerSecond RPS
+	 */
 	function initialize(
 		address _poolConfigurator,
 		IEligibilityDataProvider _eligibleDataProvider,
-		IMiddleFeeDistribution _rewardMinter,
-		uint256 _rewardsPerSecond
+		IMultiFeeDistribution _mfd,
+		uint256 _rewardsPerSecond,
+		address _rdntToken,
+		uint256 _endingTimeCadence
 	) public initializer {
-		require(address(_poolConfigurator) != address(0), "!invalid address");
-		require(address(_eligibleDataProvider) != address(0), "!invalid address");
-		require(address(_rewardMinter) != address(0), "!invalid address");
+		if (_poolConfigurator == address(0)) revert AddressZero();
+		if (_rdntToken == address(0)) revert AddressZero();
+		if (address(_eligibleDataProvider) == address(0)) revert AddressZero();
+		if (address(_mfd) == address(0)) revert AddressZero();
 
 		__Ownable_init();
 		__Pausable_init();
 
 		poolConfigurator = _poolConfigurator;
 		eligibleDataProvider = _eligibleDataProvider;
-		rewardMinter = _rewardMinter;
+		endingTime.updateCadence = _endingTimeCadence;
+		mfd = _mfd;
+		rdntToken = _rdntToken;
 		rewardsPerSecond = _rewardsPerSecond;
 		persistRewardsPerSecond = true;
 
-		eligibilityEnabled = true;
+		eligibilityMode = EligibilityModes.FULL;
 	}
 
+	/**
+	 * @dev Returns length of reward pools.
+	 */
 	function poolLength() public view returns (uint256) {
 		return registeredTokens.length;
 	}
 
-	function _getMfd() internal view returns (IMultiFeeDistribution mfd) {
-		address multiFeeDistribution = rewardMinter.getMultiFeeDistributionAddress();
-		mfd = IMultiFeeDistribution(multiFeeDistribution);
-	}
-
+	/**
+	 * @notice Sets incentive controllers for custom token.
+	 * @param _token for reward pool
+	 * @param _incentives incentives contract address
+	 */
 	function setOnwardIncentives(address _token, IOnwardIncentivesController _incentives) external onlyOwner {
-		require(poolInfo[_token].lastRewardTime != 0, "pool doesn't exist");
-		poolInfo[_token].onwardIncentives = _incentives;
+		PoolInfo storage pool = poolInfo[_token];
+		if (pool.lastRewardTime == 0) revert UnknownPool();
+		pool.onwardIncentives = _incentives;
+		emit OnwardIncentivesUpdated(_token, _incentives);
 	}
 
+	/**
+	 * @dev Updates bounty manager contract.
+	 * @param _bountyManager Bounty Manager contract.
+	 */
 	function setBountyManager(address _bountyManager) external onlyOwner {
 		bountyManager = _bountyManager;
+		emit BountyManagerUpdated(_bountyManager);
 	}
 
-	function setEligibilityEnabled(bool _newVal) external onlyOwner {
-		eligibilityEnabled = _newVal;
+	/**
+	 * @dev Enable/Disable eligibility
+	 * @param _newVal New value.
+	 */
+	function setEligibilityMode(EligibilityModes _newVal) external onlyOwner {
+		eligibilityMode = _newVal;
+		emit EligibilityModeUpdated(_newVal);
 	}
 
 	/********************** Pool Setup + Admin ***********************/
 
+	/**
+	 * @dev Starts RDNT emission.
+	 */
 	function start() public onlyOwner {
-		require(startTime == 0, "already started");
+		if (startTime != 0) revert AlreadyStarted();
 		startTime = block.timestamp;
 	}
 
-	// Add a new lp to the pool. Can only be called by the poolConfigurator.
+	/**
+	 * @dev Add a new lp to the pool. Can only be called by the poolConfigurator.
+	 * @param _token for reward pool
+	 * @param _allocPoint allocation point of the pool
+	 */
 	function addPool(address _token, uint256 _allocPoint) external {
-		require(msg.sender == poolConfigurator, "not allowed");
-		require(poolInfo[_token].lastRewardTime == 0, "pool already exists");
+		if (msg.sender != poolConfigurator) revert NotAllowed();
+		if (poolInfo[_token].lastRewardTime != 0) revert PoolExists();
 		_updateEmissions();
-		totalAllocPoint = totalAllocPoint.add(_allocPoint);
+		totalAllocPoint = totalAllocPoint + _allocPoint;
 		registeredTokens.push(_token);
-		poolInfo[_token] = PoolInfo({
-			totalSupply: 0,
-			allocPoint: _allocPoint,
-			lastRewardTime: block.timestamp,
-			accRewardPerShare: 0,
-			onwardIncentives: IOnwardIncentivesController(address(0))
-		});
+		PoolInfo storage pool = poolInfo[_token];
+		pool.allocPoint = _allocPoint;
+		pool.lastRewardTime = block.timestamp;
+		pool.onwardIncentives = IOnwardIncentivesController(address(0));
 		validRTokens[_token] = true;
 	}
 
-	// Update the given pool's allocation point. Can only be called by the owner.
-	function batchUpdateAllocPoint(address[] calldata _tokens, uint256[] calldata _allocPoints) public onlyOwner {
-		require(_tokens.length == _allocPoints.length, "params length mismatch");
+	/**
+	 * @dev Update the given pool's allocation point. Can only be called by the owner.
+	 * @param _tokens for reward pools
+	 * @param _allocPoints allocation points of the pools
+	 */
+	function batchUpdateAllocPoint(address[] calldata _tokens, uint256[] calldata _allocPoints) external onlyOwner {
+		if (_tokens.length != _allocPoints.length) revert ArrayLengthMismatch();
 		_massUpdatePools();
 		uint256 _totalAllocPoint = totalAllocPoint;
-		for (uint256 i = 0; i < _tokens.length; i++) {
+		uint256 length = _tokens.length;
+		for (uint256 i; i < length; ) {
 			PoolInfo storage pool = poolInfo[_tokens[i]];
-			require(pool.lastRewardTime > 0, "pool doesn't exist");
-			_totalAllocPoint = _totalAllocPoint.sub(pool.allocPoint).add(_allocPoints[i]);
+			if (pool.lastRewardTime == 0) revert UnknownPool();
+			_totalAllocPoint = _totalAllocPoint - pool.allocPoint + _allocPoints[i];
 			pool.allocPoint = _allocPoints[i];
+			unchecked {
+				i++;
+			}
 		}
 		totalAllocPoint = _totalAllocPoint;
+		emit BatchAllocPointsUpdated(_tokens, _allocPoints);
 	}
 
 	/**
 	 * @notice Sets the reward per second to be distributed. Can only be called by the owner.
 	 * @dev Its decimals count is ACC_REWARD_PRECISION
 	 * @param _rewardsPerSecond The amount of reward to be distributed per second.
+	 * @param _persist true if RPS is fixed, otherwise RPS is by emission schedule.
 	 */
 	function setRewardsPerSecond(uint256 _rewardsPerSecond, bool _persist) external onlyOwner {
 		_massUpdatePools();
@@ -218,12 +361,19 @@ contract ChefIncentivesController is Initializable, PausableUpgradeable, Ownable
 		emit RewardsPerSecondUpdated(_rewardsPerSecond, _persist);
 	}
 
+	/**
+	 * @dev Updates RPS.
+	 */
 	function setScheduledRewardsPerSecond() internal {
 		if (!persistRewardsPerSecond) {
 			uint256 length = emissionSchedule.length;
 			uint256 i = emissionScheduleIndex;
-			uint128 offset = uint128(block.timestamp.sub(startTime));
-			for (; i < length && offset >= emissionSchedule[i].startTimeOffset; i++) {}
+			uint128 offset = uint128(block.timestamp - startTime);
+			for (; i < length && offset >= emissionSchedule[i].startTimeOffset; ) {
+				unchecked {
+					i++;
+				}
+			}
 			if (i > emissionScheduleIndex) {
 				emissionScheduleIndex = i;
 				_massUpdatePools();
@@ -232,22 +382,47 @@ contract ChefIncentivesController is Initializable, PausableUpgradeable, Ownable
 		}
 	}
 
+	/**
+	 * @notice Ensure that the specified time offset hasn't been registered already.
+	 * @param _startTimeOffset time offset
+	 * @return true if the specified time offset is already registered
+	 */
+	function _checkDuplicateSchedule(uint256 _startTimeOffset) internal view returns (bool) {
+		uint256 length = emissionSchedule.length;
+		for (uint256 i = 0; i < length; ) {
+			if (emissionSchedule[i].startTimeOffset == _startTimeOffset) {
+				return true;
+			}
+			unchecked {
+				i++;
+			}
+		}
+		return false;
+	}
+
+	/**
+	 * @notice Updates RDNT emission schedule.
+	 * @dev This appends the new offsets and RPS.
+	 * @param _startTimeOffsets Offsets array.
+	 * @param _rewardsPerSecond RPS array.
+	 */
 	function setEmissionSchedule(
 		uint256[] calldata _startTimeOffsets,
 		uint256[] calldata _rewardsPerSecond
 	) external onlyOwner {
 		uint256 length = _startTimeOffsets.length;
-		require(length > 0 && length == _rewardsPerSecond.length, "empty or mismatch params");
+		if (length <= 0 || length != _rewardsPerSecond.length) revert ArrayLengthMismatch();
 
-		for (uint256 i = 0; i < length; i++) {
+		for (uint256 i = 0; i < length; ) {
 			if (i > 0) {
-				require(_startTimeOffsets[i - 1] < _startTimeOffsets[i], "should be ascending");
+				if (_startTimeOffsets[i - 1] > _startTimeOffsets[i]) revert NotAscending();
 			}
-			require(_startTimeOffsets[i] <= type(uint128).max, "startTimeOffsets > max uint128");
-			require(_rewardsPerSecond[i] <= type(uint128).max, "rewardsPerSecond > max uint128");
+			if (_startTimeOffsets[i] > type(uint128).max) revert ExceedsMaxInt();
+			if (_rewardsPerSecond[i] > type(uint128).max) revert ExceedsMaxInt();
+			if (_checkDuplicateSchedule(_startTimeOffsets[i])) revert DuplicateSchedule();
 
 			if (startTime > 0) {
-				require(_startTimeOffsets[i] > block.timestamp.sub(startTime), "invalid start time");
+				if (_startTimeOffsets[i] < block.timestamp - startTime) revert InvalidStart();
 			}
 			emissionSchedule.push(
 				EmissionPoint({
@@ -255,16 +430,27 @@ contract ChefIncentivesController is Initializable, PausableUpgradeable, Ownable
 					rewardsPerSecond: uint128(_rewardsPerSecond[i])
 				})
 			);
+			unchecked {
+				i++;
+			}
 		}
 		emit EmissionScheduleAppended(_startTimeOffsets, _rewardsPerSecond);
 	}
 
+	/**
+	 * @notice Recover tokens in this contract. Callable by owner.
+	 * @param tokenAddress Token address for recover
+	 * @param tokenAmount Amount to recover
+	 */
 	function recoverERC20(address tokenAddress, uint256 tokenAmount) external onlyOwner {
-		IERC20(tokenAddress).safeTransfer(owner(), tokenAmount);
+		_recoverERC20(tokenAddress, tokenAmount);
 	}
 
 	/********************** Pool State Changers ***********************/
 
+	/**
+	 * @dev Update emission params of CIC.
+	 */
 	function _updateEmissions() internal {
 		if (block.timestamp > endRewardTime()) {
 			_massUpdatePools();
@@ -275,112 +461,142 @@ contract ChefIncentivesController is Initializable, PausableUpgradeable, Ownable
 		setScheduledRewardsPerSecond();
 	}
 
-	// Update reward variables for all pools
+	/**
+	 * @dev Update reward variables for all pools.
+	 */
 	function _massUpdatePools() internal {
 		uint256 totalAP = totalAllocPoint;
-		for (uint256 i = 0; i < poolLength(); ++i) {
+		uint256 length = poolLength();
+		for (uint256 i; i < length; ) {
 			_updatePool(poolInfo[registeredTokens[i]], totalAP);
+			unchecked {
+				i++;
+			}
 		}
 		lastAllPoolUpdate = block.timestamp;
 	}
 
-	// Update reward variables of the given pool to be up-to-date.
+	/**
+	 * @dev Update reward variables of the given pool to be up-to-date.
+	 * @param pool pool info
+	 * @param _totalAllocPoint allocation point of the pool
+	 */
 	function _updatePool(PoolInfo storage pool, uint256 _totalAllocPoint) internal {
 		uint256 timestamp = block.timestamp;
-		if (endRewardTime() <= block.timestamp) {
-			timestamp = endRewardTime();
+		uint256 endReward = endRewardTime();
+		if (endReward <= timestamp) {
+			timestamp = endReward;
 		}
 		if (timestamp <= pool.lastRewardTime) {
 			return;
 		}
 
-		uint256 lpSupply = pool.totalSupply;
-		if (lpSupply == 0) {
-			pool.lastRewardTime = timestamp;
-			return;
-		}
-
-		uint256 duration = timestamp.sub(pool.lastRewardTime);
-		uint256 rawReward = duration.mul(rewardsPerSecond);
-		if (availableRewards() < rawReward) {
-			rawReward = availableRewards();
-		}
-		uint256 reward = rawReward.mul(pool.allocPoint).div(_totalAllocPoint);
-		accountedRewards = accountedRewards.add(reward);
-		pool.accRewardPerShare = pool.accRewardPerShare.add(reward.mul(ACC_REWARD_PRECISION).div(lpSupply));
+		(uint256 reward, uint256 newAccRewardPerShare) = _newRewards(pool, _totalAllocPoint);
+		accountedRewards = accountedRewards + reward;
+		pool.accRewardPerShare = pool.accRewardPerShare + newAccRewardPerShare;
 		pool.lastRewardTime = timestamp;
 	}
 
 	/********************** Emission Calc + Transfer ***********************/
 
+	/**
+	 * @notice Pending rewards of a user.
+	 * @param _user address for claim
+	 * @param _tokens array of reward-bearing tokens
+	 * @return claimable rewards array
+	 */
 	function pendingRewards(address _user, address[] memory _tokens) public view returns (uint256[] memory) {
 		uint256[] memory claimable = new uint256[](_tokens.length);
-		for (uint256 i = 0; i < _tokens.length; i++) {
+		uint256 length = _tokens.length;
+		for (uint256 i; i < length; ) {
 			address token = _tokens[i];
 			PoolInfo storage pool = poolInfo[token];
 			UserInfo storage user = userInfo[token][_user];
 			uint256 accRewardPerShare = pool.accRewardPerShare;
-			uint256 lpSupply = pool.totalSupply;
-			if (block.timestamp > pool.lastRewardTime && lpSupply != 0) {
-				uint256 duration = block.timestamp.sub(pool.lastRewardTime);
-				uint256 reward = duration.mul(rewardsPerSecond).mul(pool.allocPoint).div(totalAllocPoint);
-				accRewardPerShare = accRewardPerShare.add(reward.mul(ACC_REWARD_PRECISION).div(lpSupply));
+			if (block.timestamp > pool.lastRewardTime) {
+				(, uint256 newAccRewardPerShare) = _newRewards(pool, totalAllocPoint);
+				accRewardPerShare = accRewardPerShare + newAccRewardPerShare;
 			}
-			claimable[i] = user.amount.mul(accRewardPerShare).div(ACC_REWARD_PRECISION).sub(user.rewardDebt);
+			claimable[i] = (user.amount * accRewardPerShare) / ACC_REWARD_PRECISION - user.rewardDebt;
+			unchecked {
+				i++;
+			}
 		}
 		return claimable;
 	}
 
-	// Claim pending rewards for one or more pools.
-	// Rewards are not received directly, they are minted by the rewardMinter.
+	/**
+	 * @notice Claim rewards. They are vested into MFD.
+	 * @param _user address for claim
+	 * @param _tokens array of reward-bearing tokens
+	 */
 	function claim(address _user, address[] memory _tokens) public whenNotPaused {
-		if (eligibilityEnabled) {
+		if (eligibilityMode != EligibilityModes.DISABLED) {
+			if (!eligibleDataProvider.isEligibleForRewards(_user)) revert EligibleRequired();
 			checkAndProcessEligibility(_user, true, true);
 		}
 
 		_updateEmissions();
 
+		uint256 currentTimestamp = block.timestamp;
+
 		uint256 pending = userBaseClaimable[_user];
 		userBaseClaimable[_user] = 0;
 		uint256 _totalAllocPoint = totalAllocPoint;
-		for (uint256 i = 0; i < _tokens.length; i++) {
-			require(validRTokens[_tokens[i]], "invalid rtoken");
+		uint256 length = _tokens.length;
+		for (uint256 i; i < length; ) {
+			if (!validRTokens[_tokens[i]]) revert InvalidRToken();
 			PoolInfo storage pool = poolInfo[_tokens[i]];
-			require(pool.lastRewardTime > 0, "pool doesn't exist");
+			if (pool.lastRewardTime == 0) revert UnknownPool();
 			_updatePool(pool, _totalAllocPoint);
 			UserInfo storage user = userInfo[_tokens[i]][_user];
-			uint256 rewardDebt = user.amount.mul(pool.accRewardPerShare).div(ACC_REWARD_PRECISION);
-			pending = pending.add(rewardDebt.sub(user.rewardDebt));
+			uint256 rewardDebt = (user.amount * pool.accRewardPerShare) / ACC_REWARD_PRECISION;
+			pending = pending + rewardDebt - user.rewardDebt;
 			user.rewardDebt = rewardDebt;
-			user.lastClaimTime = block.timestamp;
+			user.lastClaimTime = currentTimestamp;
+			unchecked {
+				i++;
+			}
 		}
 
-		_mint(_user, pending);
+		_vestTokens(_user, pending);
 
 		eligibleDataProvider.updatePrice();
-
-		if (endRewardTime() < block.timestamp + 5 days) {
-			_emitReserveLow();
-		}
 	}
 
-	function _emitReserveLow() internal {
-		address rdntToken = rewardMinter.getRdntTokenAddress();
-		emit ChefReserveLow(IERC20(rdntToken).balanceOf(address(this)));
+	/**
+	 * @notice Vest tokens to MFD.
+	 * @param _user address to receive
+	 * @param _amount to vest
+	 */
+	function _vestTokens(address _user, uint256 _amount) internal {
+		if (_amount == 0) revert NothingToVest();
+		IMultiFeeDistribution mfd_ = mfd;
+		_sendRadiant(address(mfd_), _amount);
+		mfd_.vestTokens(_user, _amount, true);
 	}
 
-	function _mint(address _user, uint256 _amount) internal {
-		_amount = _sendRadiant(address(_getMfd()), _amount);
-		_getMfd().mint(_user, _amount, true);
-	}
-
+	/**
+	 * @notice Exempt a contract from eligibility check.
+	 * @dev Can be called by owner or authorized contracts
+	 * @param _contract address to exempt
+	 * @param _value flag for exempt
+	 */
 	function setEligibilityExempt(address _contract, bool _value) public {
-		require(msg.sender == owner() || msg.sender == address(leverager), "!authorized");
+		// skip this if not processing eligibilty all the time
+		if (eligibilityMode != EligibilityModes.FULL) return;
+		if (msg.sender != owner() && !authorizedContracts[msg.sender]) revert InsufficientPermission();
 		eligibilityExempt[_contract] = _value;
 	}
 
-	function setLeverager(ILeverager _leverager) external onlyOwner {
-		leverager = _leverager;
+	/**
+	 * @notice Updates whether the provided address is authorized to call setEligibilityExempt(), only callable by owner.
+	 * @param _address address of the user or contract whose authorization level is being changed
+	 */
+	function setContractAuthorization(address _address, bool _authorize) external onlyOwner {
+		if (authorizedContracts[_address] == _authorize) revert AuthorizationAlreadySet();
+		authorizedContracts[_address] = _authorize;
+		emit AuthorizedContractUpdated(_address, _authorize);
 	}
 
 	/********************** Eligibility + Disqualification ***********************/
@@ -388,25 +604,41 @@ contract ChefIncentivesController is Initializable, PausableUpgradeable, Ownable
 	/**
 	 * @notice `after` Hook for deposit and borrow update.
 	 * @dev important! eligible status can be updated here
+	 * @param _user address
+	 * @param _balance balance of token
+	 * @param _totalSupply total supply of the token
 	 */
 	function handleActionAfter(address _user, uint256 _balance, uint256 _totalSupply) external {
-		require(validRTokens[msg.sender] || msg.sender == address(_getMfd()), "!rToken || mfd");
+		if (!validRTokens[msg.sender] && msg.sender != address(mfd)) revert NotRTokenOrMfd();
 
-		if (_user == address(rewardMinter) || _user == address(_getMfd()) || eligibilityExempt[_user]) {
+		if (_user == address(mfd) || eligibilityExempt[_user]) {
 			return;
 		}
-		if (eligibilityEnabled) {
-			eligibleDataProvider.refresh(_user);
-			if (eligibleDataProvider.lastEligibleStatus(_user)) {
-				_handleActionAfterForToken(msg.sender, _user, _balance, _totalSupply);
+		if (eligibilityMode == EligibilityModes.FULL) {
+			bool lastEligibleStatus = eligibleDataProvider.lastEligibleStatus(_user);
+			bool isCurrentlyEligible = eligibleDataProvider.refresh(_user);
+			if (isCurrentlyEligible) {
+				if (lastEligibleStatus) {
+					_handleActionAfterForToken(msg.sender, _user, _balance, _totalSupply);
+				} else {
+					_updateRegisteredBalance(_user);
+				}
 			} else {
-				checkAndProcessEligibility(_user, true, false);
+				_processEligibility(_user, isCurrentlyEligible, true);
 			}
 		} else {
 			_handleActionAfterForToken(msg.sender, _user, _balance, _totalSupply);
 		}
 	}
 
+	/**
+	 * @notice `after` Hook for deposit and borrow update.
+	 * @dev important! eligible status can be updated here
+	 * @param _token address
+	 * @param _user address
+	 * @param _balance new amount
+	 * @param _totalSupply total supply of the token
+	 */
 	function _handleActionAfterForToken(
 		address _token,
 		address _user,
@@ -414,22 +646,24 @@ contract ChefIncentivesController is Initializable, PausableUpgradeable, Ownable
 		uint256 _totalSupply
 	) internal {
 		PoolInfo storage pool = poolInfo[_token];
-		require(pool.lastRewardTime > 0, "pool doesn't exist");
+		if (pool.lastRewardTime == 0) revert UnknownPool();
+		// Although we would want the pools to be as up to date as possible when users
+		// transfer rTokens or dTokens, updating all pools on every r-/d-Token interaction would be too gas intensive.
 		// _updateEmissions();
 		_updatePool(pool, totalAllocPoint);
 		UserInfo storage user = userInfo[_token][_user];
 		uint256 amount = user.amount;
 		uint256 accRewardPerShare = pool.accRewardPerShare;
 		if (amount != 0) {
-			uint256 pending = amount.mul(accRewardPerShare).div(ACC_REWARD_PRECISION).sub(user.rewardDebt);
+			uint256 pending = (amount * accRewardPerShare) / ACC_REWARD_PRECISION - user.rewardDebt;
 			if (pending != 0) {
-				userBaseClaimable[_user] = userBaseClaimable[_user].add(pending);
+				userBaseClaimable[_user] = userBaseClaimable[_user] + pending;
 			}
 		}
-		pool.totalSupply = pool.totalSupply.sub(user.amount);
+		pool.totalSupply = pool.totalSupply - user.amount;
 		user.amount = _balance;
-		user.rewardDebt = _balance.mul(accRewardPerShare).div(ACC_REWARD_PRECISION);
-		pool.totalSupply = pool.totalSupply.add(_balance);
+		user.rewardDebt = (_balance * accRewardPerShare) / ACC_REWARD_PRECISION;
+		pool.totalSupply = pool.totalSupply + _balance;
 		if (pool.onwardIncentives != IOnwardIncentivesController(address(0))) {
 			pool.onwardIncentives.handleAction(_token, _user, _balance, _totalSupply);
 		}
@@ -439,71 +673,93 @@ contract ChefIncentivesController is Initializable, PausableUpgradeable, Ownable
 
 	/**
 	 * @notice `before` Hook for deposit and borrow update.
+	 * @param _user address
 	 */
 	function handleActionBefore(address _user) external {}
 
 	/**
 	 * @notice Hook for lock update.
 	 * @dev Called by the locking contracts before locking or unlocking happens
+	 * @param _user address
 	 */
 	function beforeLockUpdate(address _user) external {}
 
 	/**
 	 * @notice Hook for lock update.
 	 * @dev Called by the locking contracts after locking or unlocking happens
+	 * @param _user address
 	 */
 	function afterLockUpdate(address _user) external {
-		require(msg.sender == address(_getMfd()), "!MFD");
-		if (eligibilityEnabled) {
-			eligibleDataProvider.refresh(_user);
-			if (eligibleDataProvider.lastEligibleStatus(_user)) {
-				for (uint256 i = 0; i < poolLength(); i++) {
-					uint256 newBal = IERC20(registeredTokens[i]).balanceOf(_user);
-					uint256 registeredBal = userInfo[registeredTokens[i]][_user].amount;
-					if (newBal != 0 && newBal != registeredBal) {
-						_handleActionAfterForToken(
-							registeredTokens[i],
-							_user,
-							newBal,
-							poolInfo[registeredTokens[i]].totalSupply.add(newBal).sub(registeredBal)
-						);
-					}
-				}
+		if (eligibilityMode != EligibilityModes.DISABLED) {
+			if (msg.sender != address(mfd)) revert NotMFD();
+			bool isCurrentlyEligible = eligibleDataProvider.refresh(_user);
+			if (isCurrentlyEligible) {
+				_updateRegisteredBalance(_user);
 			} else {
-				checkAndProcessEligibility(_user, true, false);
+				_processEligibility(_user, isCurrentlyEligible, true);
+			}
+		}
+	}
+
+	/**
+	 * @notice Update balance if there are any unregistered.
+	 * @param _user address of the user whose balances will be updated
+	 */
+	function _updateRegisteredBalance(address _user) internal {
+		uint256 length = poolLength();
+		for (uint256 i; i < length; ) {
+			uint256 newBal = IERC20(registeredTokens[i]).balanceOf(_user);
+			uint256 registeredBal = userInfo[registeredTokens[i]][_user].amount;
+			if (newBal != 0 && newBal != registeredBal) {
+				_handleActionAfterForToken(
+					registeredTokens[i],
+					_user,
+					newBal,
+					poolInfo[registeredTokens[i]].totalSupply + newBal - registeredBal
+				);
+			}
+			unchecked {
+				i++;
 			}
 		}
 	}
 
 	/********************** Eligibility + Disqualification ***********************/
 
-	function hasEligibleDeposits(address _user) internal view returns (bool hasDeposits) {
-		for (uint256 i = 0; i < poolLength(); i++) {
-			UserInfo storage user = userInfo[registeredTokens[i]][_user];
-			if (user.amount != 0) {
+	/**
+	 * @dev Returns true if `_user` has some reward eligible tokens.
+	 * @param _user address of recipient
+	 */
+	function hasEligibleDeposits(address _user) public view returns (bool hasDeposits) {
+		uint256 length = poolLength();
+		for (uint256 i; i < length; ) {
+			if (userInfo[registeredTokens[i]][_user].amount != 0) {
 				hasDeposits = true;
 				break;
+			}
+			unchecked {
+				i++;
 			}
 		}
 	}
 
-	function checkAndProcessEligibility(
+	/**
+	 * @dev Stop emissions if there's any new DQ.
+	 * @param _user address of recipient
+	 * @param _isEligible user's eligible status
+	 * @param _execute true if it's actual execution
+	 * @return issueBaseBounty true for base bounty
+	 */
+	function _processEligibility(
 		address _user,
-		bool _execute,
-		bool _refresh
+		bool _isEligible,
+		bool _execute
 	) internal returns (bool issueBaseBounty) {
-		bool isEligible;
-		if (_refresh && _execute) {
-			eligibleDataProvider.refresh(_user);
-			isEligible = eligibleDataProvider.lastEligibleStatus(_user);
-		} else {
-			isEligible = eligibleDataProvider.isEligibleForRewards(_user);
-		}
 		bool hasEligDeposits = hasEligibleDeposits(_user);
 		uint256 lastDqTime = eligibleDataProvider.getDqTime(_user);
 		bool alreadyDqd = lastDqTime != 0;
 
-		if (!isEligible && hasEligDeposits && !alreadyDqd) {
+		if (!_isEligible && hasEligDeposits && !alreadyDqd) {
 			issueBaseBounty = true;
 		}
 		if (_execute && issueBaseBounty) {
@@ -512,113 +768,266 @@ contract ChefIncentivesController is Initializable, PausableUpgradeable, Ownable
 		}
 	}
 
+	/**
+	 * @notice Check eligibility of the user
+	 * @dev Stop emissions if there's any DQ.
+	 * @param _user address of recipient
+	 * @param _execute true if it's actual execution
+	 * @param _refresh true if needs to refresh user's eligible status
+	 * @return issueBaseBounty true for base bounty
+	 */
+	function checkAndProcessEligibility(
+		address _user,
+		bool _execute,
+		bool _refresh
+	) internal returns (bool issueBaseBounty) {
+		bool isEligible;
+		if (_refresh && _execute) {
+			isEligible = eligibleDataProvider.refresh(_user);
+		} else {
+			isEligible = eligibleDataProvider.isEligibleForRewards(_user);
+		}
+		issueBaseBounty = _processEligibility(_user, isEligible, _execute);
+	}
+
+	/**
+	 * @notice Claim bounty
+	 * @param _user address of recipient
+	 * @param _execute true if it's actual execution
+	 * @return issueBaseBounty true for base bounty
+	 */
 	function claimBounty(address _user, bool _execute) public returns (bool issueBaseBounty) {
-		require(msg.sender == address(bountyManager), "bounty only");
+		if (msg.sender != address(bountyManager)) revert BountyOnly();
 		issueBaseBounty = checkAndProcessEligibility(_user, _execute, true);
 	}
 
+	/**
+	 * @dev Stop RDNT emissions for specific users
+	 * @param _user address of recipient
+	 */
 	function stopEmissionsFor(address _user) internal {
-		require(eligibilityEnabled, "!EE");
+		if (eligibilityMode == EligibilityModes.DISABLED) revert NotEligible();
 		// lastEligibleStatus will be fresh from refresh before this call
-		require(!eligibleDataProvider.lastEligibleStatus(_user), "user is still eligible");
-		for (uint256 i = 0; i < poolLength(); ++i) {
+		uint256 length = poolLength();
+		for (uint256 i; i < length; ) {
 			address token = registeredTokens[i];
 			PoolInfo storage pool = poolInfo[token];
 			UserInfo storage user = userInfo[token][_user];
 
 			if (user.amount != 0) {
-				_handleActionAfterForToken(token, _user, 0, pool.totalSupply.sub(user.amount));
+				_handleActionAfterForToken(token, _user, 0, pool.totalSupply - user.amount);
+			}
+			unchecked {
+				i++;
 			}
 		}
 		eligibleDataProvider.setDqTime(_user, block.timestamp);
 	}
 
-	function _sendRadiant(address _user, uint256 _amount) internal returns (uint256) {
+	/**
+	 * @notice function to stop user emissions
+	 * @param _user address of user to stop emissions for
+	 */
+	function manualStopEmissionsFor(address _user, address[] memory _tokens) public isWhitelisted {
+		if (_user == address(0)) revert AddressZero();
+		uint256 length = _tokens.length;
+		for (uint256 i; i < length; ) {
+			address token = _tokens[i];
+			PoolInfo storage pool = poolInfo[token];
+			UserInfo storage user = userInfo[token][_user];
+
+			if (pool.lastRewardTime == 0) revert UnknownPool();
+
+			uint256 amount = user.amount;
+			if (amount != 0) {
+				uint256 accRewardPerShare = pool.accRewardPerShare;
+				uint256 pending = (amount * accRewardPerShare) / ACC_REWARD_PRECISION - user.rewardDebt;
+				if (pending != 0) {
+					userBaseClaimable[_user] = userBaseClaimable[_user] + pending;
+				}
+				uint256 newTotalSupply = pool.totalSupply - amount;
+				user.amount = 0;
+				user.rewardDebt = 0;
+				pool.totalSupply = newTotalSupply;
+
+				emit BalanceUpdated(token, _user, 0, newTotalSupply);
+			}
+			unchecked {
+				i++;
+			}
+		}
+		eligibleDataProvider.setDqTime(_user, block.timestamp);
+	}
+
+	function manualStopAllEmissionsFor(address _user) external isWhitelisted {
+		manualStopEmissionsFor(_user, registeredTokens);
+	}
+
+	/**
+	 * @dev Send RNDT rewards to user.
+	 * @param _user address of recipient
+	 * @param _amount of RDNT
+	 */
+	function _sendRadiant(address _user, uint256 _amount) internal {
 		if (_amount == 0) {
-			return 0;
+			return;
 		}
 
-		address rdntToken = rewardMinter.getRdntTokenAddress();
-		uint256 chefReserve = IERC20(rdntToken).balanceOf(address(this));
+		address rdntToken_ = rdntToken;
+		uint256 chefReserve = IERC20(rdntToken_).balanceOf(address(this));
 		if (_amount > chefReserve) {
-			emit ChefReserveEmpty(chefReserve);
-			// RPS is set to zero
-			// Set to persist to prevent update by _updateEmissions()
-			persistRewardsPerSecond = true;
-			rewardsPerSecond = 0;
-			_pause();
+			revert OutOfRewards();
 		} else {
-			IERC20(rdntToken).safeTransfer(_user, _amount);
+			IERC20(rdntToken_).safeTransfer(_user, _amount);
 		}
-		return _amount;
 	}
 
 	/********************** RDNT Reserve Management ***********************/
 
+	/**
+	 * @notice Ending reward distribution time.
+	 */
 	function endRewardTime() public returns (uint256) {
-		if (endingTime.lastUpdatedTime + endingTime.updateCadence >= block.timestamp) {
+		if (endingTime.lastUpdatedTime + endingTime.updateCadence > block.timestamp) {
 			return endingTime.estimatedTime;
 		}
 
-		uint256 unclaimedRewards = depositedRewards.sub(accountedRewards);
+		uint256 unclaimedRewards = availableRewards();
 		uint256 extra = 0;
-		for (uint256 i; i < poolLength(); i++) {
-			if (poolInfo[registeredTokens[i]].lastRewardTime <= lastAllPoolUpdate) {
-				continue;
-			} else {
-				extra = extra.add(
-					poolInfo[registeredTokens[i]]
-						.lastRewardTime
-						.sub(lastAllPoolUpdate)
-						.mul(poolInfo[registeredTokens[i]].allocPoint)
-						.mul(rewardsPerSecond)
-						.div(totalAllocPoint)
-				);
+		uint256 length = poolLength();
+		for (uint256 i; i < length; ) {
+			PoolInfo storage pool = poolInfo[registeredTokens[i]];
+
+			if (pool.lastRewardTime > lastAllPoolUpdate) {
+				extra +=
+					((pool.lastRewardTime - lastAllPoolUpdate) * pool.allocPoint * rewardsPerSecond) /
+					totalAllocPoint;
+			}
+			unchecked {
+				i++;
 			}
 		}
+		endingTime.lastUpdatedTime = block.timestamp;
+
 		if (rewardsPerSecond == 0) {
 			endingTime.estimatedTime = type(uint256).max;
+			return type(uint256).max;
 		} else {
-			endingTime.estimatedTime = (unclaimedRewards + extra).div(rewardsPerSecond) + (lastAllPoolUpdate);
+			uint256 newEndTime = (unclaimedRewards + extra) / rewardsPerSecond + lastAllPoolUpdate;
+			endingTime.estimatedTime = newEndTime;
+			return newEndTime;
 		}
-		endingTime.lastUpdatedTime = block.timestamp;
-		return endingTime.estimatedTime;
 	}
 
+	/**
+	 * @notice Updates cadence duration of ending time.
+	 * @dev Only callable by owner.
+	 * @param _lapse new cadence
+	 */
 	function setEndingTimeUpdateCadence(uint256 _lapse) external onlyOwner {
-		require(_lapse <= 1 weeks, "cadence too long");
+		if (_lapse > 1 weeks) revert CadenceTooLong();
 		endingTime.updateCadence = _lapse;
+		emit EndingTimeUpdateCadence(_lapse);
 	}
 
+	/**
+	 * @notice Add new rewards.
+	 * @dev Only callable by owner.
+	 * @param _amount new deposit amount
+	 */
 	function registerRewardDeposit(uint256 _amount) external onlyOwner {
-		depositedRewards = depositedRewards.add(_amount);
+		depositedRewards = depositedRewards + _amount;
 		_massUpdatePools();
 		if (rewardsPerSecond == 0 && lastRPS > 0) {
 			rewardsPerSecond = lastRPS;
 		}
+		emit RewardDeposit(_amount);
 	}
 
+	/**
+	 * @notice Available reward amount for future distribution.
+	 * @dev This value is equal to `depositedRewards` - `accountedRewards`.
+	 * @return amount available
+	 */
 	function availableRewards() internal view returns (uint256 amount) {
-		return depositedRewards.sub(accountedRewards);
+		return depositedRewards - accountedRewards;
 	}
 
+	/**
+	 * @notice Claim rewards entitled to all registered tokens.
+	 * @param _user address of the user
+	 */
 	function claimAll(address _user) external {
 		claim(_user, registeredTokens);
 	}
 
+	/**
+	 * @notice Sum of all pending RDNT rewards.
+	 * @param _user address of the user
+	 * @return pending reward amount
+	 */
 	function allPendingRewards(address _user) public view returns (uint256 pending) {
 		pending = userBaseClaimable[_user];
 		uint256[] memory claimable = pendingRewards(_user, registeredTokens);
-		for (uint256 i = 0; i < claimable.length; i++) {
+		uint256 length = claimable.length;
+		for (uint256 i; i < length; ) {
 			pending += claimable[i];
+			unchecked {
+				i++;
+			}
 		}
 	}
 
+	/**
+	 * @notice Pause the claim operations.
+	 */
 	function pause() external onlyOwner {
 		_pause();
 	}
 
+	/**
+	 * @notice Unpause the claim operations.
+	 */
 	function unpause() external onlyOwner {
 		_unpause();
+	}
+
+	/**
+	 * @dev Returns new rewards since last reward time.
+	 * @param pool pool info
+	 * @param _totalAllocPoint allocation point of the pool
+	 */
+	function _newRewards(
+		PoolInfo memory pool,
+		uint256 _totalAllocPoint
+	) internal view returns (uint256 newReward, uint256 newAccRewardPerShare) {
+		uint256 lpSupply = pool.totalSupply;
+		if (lpSupply > 0) {
+			uint256 duration = block.timestamp - pool.lastRewardTime;
+			uint256 rawReward = duration * rewardsPerSecond;
+
+			uint256 rewards = availableRewards();
+			if (rewards < rawReward) {
+				rawReward = rewards;
+			}
+			newReward = (rawReward * pool.allocPoint) / _totalAllocPoint;
+			newAccRewardPerShare = (newReward * ACC_REWARD_PRECISION) / lpSupply;
+		}
+	}
+
+	/**
+	 * @notice Add new address to whitelist.
+	 * @param user address
+	 * @param status for whitelist
+	 */
+	function setAddressWLstatus(address user, bool status) external onlyOwner {
+		whitelist[user] = status;
+	}
+
+	/**
+	 * @notice Toggle whitelist to be either active or inactive
+	 */
+	function toggleWhitelist() external onlyOwner {
+		whitelistActive = !whitelistActive;
 	}
 }

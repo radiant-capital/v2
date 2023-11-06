@@ -1,6 +1,5 @@
-// SPDX-License-Identifier: agpl-3.0
+// SPDX-License-Identifier: AGPL-3.0
 pragma solidity 0.8.12;
-pragma abicoder v2;
 
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
@@ -47,6 +46,10 @@ contract AToken is VersionedInitializable, IncentivizedERC20("ATOKEN_IMPL", "ATO
 
 	function getRevision() internal pure virtual override returns (uint256) {
 		return ATOKEN_REVISION;
+	}
+
+	constructor() {
+		_disableInitializers();
 	}
 
 	/**

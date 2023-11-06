@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: agpl-3.0
+// SPDX-License-Identifier: AGPL-3.0
 pragma solidity 0.8.12;
 pragma experimental ABIEncoderV2;
 
@@ -15,6 +15,7 @@ import {DataTypes} from "../libraries/types/DataTypes.sol";
 import {IInitializableDebtToken} from "../../interfaces/IInitializableDebtToken.sol";
 import {IInitializableAToken} from "../../interfaces/IInitializableAToken.sol";
 import {IChefIncentivesController} from "../../interfaces/IChefIncentivesController.sol";
+import {IAaveIncentivesController} from "../../interfaces/IAaveIncentivesController.sol";
 import {ILendingPoolConfigurator} from "../../interfaces/ILendingPoolConfigurator.sol";
 import {IMultiFeeDistribution} from "../../interfaces/IMultiFeeDistribution.sol";
 
@@ -48,6 +49,10 @@ contract LendingPoolConfigurator is VersionedInitializable, ILendingPoolConfigur
 		return CONFIGURATOR_REVISION;
 	}
 
+	constructor() {
+		_disableInitializers();
+	}
+
 	function initialize(ILendingPoolAddressesProvider provider) public initializer {
 		addressesProvider = provider;
 		pool = ILendingPool(addressesProvider.getLendingPool());
@@ -58,8 +63,12 @@ contract LendingPoolConfigurator is VersionedInitializable, ILendingPoolConfigur
 	 **/
 	function batchInitReserve(InitReserveInput[] calldata input) external onlyPoolAdmin {
 		ILendingPool cachedPool = pool;
-		for (uint256 i = 0; i < input.length; i++) {
+		uint256 length = input.length;
+		for (uint256 i = 0; i < length; ) {
 			_initReserve(cachedPool, input[i]);
+			unchecked {
+				i++;
+			}
 		}
 	}
 
@@ -67,16 +76,18 @@ contract LendingPoolConfigurator is VersionedInitializable, ILendingPoolConfigur
 		IChefIncentivesController incentivesController = IChefIncentivesController(input.incentivesController);
 		address aTokenProxyAddress = _initTokenWithProxy(
 			input.aTokenImpl,
-			abi.encodeWithSelector(
-				IInitializableAToken.initialize.selector,
-				_pool,
-				input.treasury,
-				input.underlyingAsset,
-				incentivesController,
-				input.underlyingAssetDecimals,
-				input.aTokenName,
-				input.aTokenSymbol,
-				input.params
+			abi.encodeCall(
+				IInitializableAToken.initialize,
+				(
+					_pool,
+					input.treasury,
+					input.underlyingAsset,
+					IAaveIncentivesController(input.incentivesController),
+					input.underlyingAssetDecimals,
+					input.aTokenName,
+					input.aTokenSymbol,
+					input.params
+				)
 			)
 		);
 		incentivesController.addPool(aTokenProxyAddress, input.allocPoint);
@@ -84,15 +95,17 @@ contract LendingPoolConfigurator is VersionedInitializable, ILendingPoolConfigur
 
 		address stableDebtTokenProxyAddress = _initTokenWithProxy(
 			input.stableDebtTokenImpl,
-			abi.encodeWithSelector(
-				IInitializableDebtToken.initialize.selector,
-				_pool,
-				input.underlyingAsset,
-				IChefIncentivesController(input.incentivesController),
-				input.underlyingAssetDecimals,
-				input.stableDebtTokenName,
-				input.stableDebtTokenSymbol,
-				input.params
+			abi.encodeCall(
+				IInitializableDebtToken.initialize,
+				(
+					_pool,
+					input.underlyingAsset,
+					IAaveIncentivesController(input.incentivesController),
+					input.underlyingAssetDecimals,
+					input.stableDebtTokenName,
+					input.stableDebtTokenSymbol,
+					input.params
+				)
 			)
 		);
 		// stableDebt is not added to incentives controller
@@ -100,15 +113,17 @@ contract LendingPoolConfigurator is VersionedInitializable, ILendingPoolConfigur
 
 		address variableDebtTokenProxyAddress = _initTokenWithProxy(
 			input.variableDebtTokenImpl,
-			abi.encodeWithSelector(
-				IInitializableDebtToken.initialize.selector,
-				_pool,
-				input.underlyingAsset,
-				IChefIncentivesController(input.incentivesController),
-				input.underlyingAssetDecimals,
-				input.variableDebtTokenName,
-				input.variableDebtTokenSymbol,
-				input.params
+			abi.encodeCall(
+				IInitializableDebtToken.initialize,
+				(
+					_pool,
+					input.underlyingAsset,
+					IAaveIncentivesController(input.incentivesController),
+					input.underlyingAssetDecimals,
+					input.variableDebtTokenName,
+					input.variableDebtTokenSymbol,
+					input.params
+				)
 			)
 		);
 		incentivesController.addPool(variableDebtTokenProxyAddress, input.allocPoint);
@@ -149,16 +164,18 @@ contract LendingPoolConfigurator is VersionedInitializable, ILendingPoolConfigur
 
 		(, , , uint256 decimals, ) = cachedPool.getConfiguration(input.asset).getParamsMemory();
 
-		bytes memory encodedCall = abi.encodeWithSelector(
-			IInitializableAToken.initialize.selector,
-			cachedPool,
-			input.treasury,
-			input.asset,
-			input.incentivesController,
-			decimals,
-			input.name,
-			input.symbol,
-			input.params
+		bytes memory encodedCall = abi.encodeCall(
+			IInitializableAToken.initialize,
+			(
+				cachedPool,
+				input.treasury,
+				input.asset,
+				IAaveIncentivesController(input.incentivesController),
+				uint8(decimals),
+				input.name,
+				input.symbol,
+				input.params
+			)
 		);
 
 		_upgradeTokenImplementation(reserveData.aTokenAddress, input.implementation, encodedCall);
@@ -176,15 +193,17 @@ contract LendingPoolConfigurator is VersionedInitializable, ILendingPoolConfigur
 
 		(, , , uint256 decimals, ) = cachedPool.getConfiguration(input.asset).getParamsMemory();
 
-		bytes memory encodedCall = abi.encodeWithSelector(
-			IInitializableDebtToken.initialize.selector,
-			cachedPool,
-			input.asset,
-			input.incentivesController,
-			decimals,
-			input.name,
-			input.symbol,
-			input.params
+		bytes memory encodedCall = abi.encodeCall(
+			IInitializableDebtToken.initialize,
+			(
+				cachedPool,
+				input.asset,
+				IAaveIncentivesController(input.incentivesController),
+				uint8(decimals),
+				input.name,
+				input.symbol,
+				input.params
+			)
 		);
 
 		_upgradeTokenImplementation(reserveData.stableDebtTokenAddress, input.implementation, encodedCall);
@@ -202,15 +221,17 @@ contract LendingPoolConfigurator is VersionedInitializable, ILendingPoolConfigur
 
 		(, , , uint256 decimals, ) = cachedPool.getConfiguration(input.asset).getParamsMemory();
 
-		bytes memory encodedCall = abi.encodeWithSelector(
-			IInitializableDebtToken.initialize.selector,
-			cachedPool,
-			input.asset,
-			input.incentivesController,
-			decimals,
-			input.name,
-			input.symbol,
-			input.params
+		bytes memory encodedCall = abi.encodeCall(
+			IInitializableDebtToken.initialize,
+			(
+				cachedPool,
+				input.asset,
+				IAaveIncentivesController(input.incentivesController),
+				uint8(decimals),
+				input.name,
+				input.symbol,
+				input.params
+			)
 		);
 
 		_upgradeTokenImplementation(reserveData.variableDebtTokenAddress, input.implementation, encodedCall);

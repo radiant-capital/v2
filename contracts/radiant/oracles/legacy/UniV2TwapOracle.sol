@@ -1,16 +1,16 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.12;
 
-import "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
-import "./BaseOracle.sol";
-import "../../dependencies/uniswap/contracts/FixedPoint.sol";
-import "../../dependencies/uniswap/contracts/UniswapV2OracleLibrary.sol";
+import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
+import {BaseOracle} from "../BaseOracle.sol";
+import {FixedPoint} from "../../../dependencies/uniswap/contracts/FixedPoint.sol";
+import {UniswapV2OracleLibrary, IUniswapV2Pair} from "../../../dependencies/uniswap/contracts/UniswapV2OracleLibrary.sol";
 
 /// @title UniV2TwapOracle Contract
 /// @author Radiant team
 /// @dev Fixed window oracle that recomputes the average price for the entire period once every period
 /// Note that the price average is only guaranteed to be over at least 1 period, but may be over a longer period
-contract UniV2TwapOracle is Initializable, BaseOracle {
+contract UniV2TwapOracle is BaseOracle {
 	using FixedPoint for *;
 
 	/// @notice TWAP period
@@ -46,6 +46,31 @@ contract UniV2TwapOracle is Initializable, BaseOracle {
 	/// @notice Average price of token1
 	FixedPoint.uq112x112 public price1Average;
 
+	/// @notice Minimum TWAP time period
+	uint256 public constant PERIOD_MIN = 10;
+
+	error InvalidToken();
+
+	error NoReserves();
+
+	error PeriodBelowMin();
+
+	error PeriodNotElapsed();
+
+	error PriceIsStale();
+
+	/********************** Events ***********************/
+
+	event PeriodUpdated(uint256 indexed _period);
+
+	event ConsultLeniencyUpdated(uint256 indexed _consultLeniency);
+
+	event AllowStaleConsultsUpdated(bool indexed _allowStaleConsults);
+
+	constructor() {
+		_disableInitializers();
+	}
+
 	/**
 	 * @notice Initializer
 	 * @param _pair Uniswap pair contract
@@ -63,9 +88,9 @@ contract UniV2TwapOracle is Initializable, BaseOracle {
 		uint256 _consultLeniency,
 		bool _allowStaleConsults
 	) external initializer {
-		require(_pair != address(0), "pair is 0 address");
-		require(_rdnt != address(0), "rdnt is 0 address");
-		require(_ethChainlinkFeed != address(0), "ethChainlinkFeed is 0 address");
+		if (_pair == address(0)) revert AddressZero();
+		if (_rdnt == address(0)) revert AddressZero();
+		if (_ethChainlinkFeed == address(0)) revert AddressZero();
 
 		pair = IUniswapV2Pair(_pair);
 		token0 = pair.token0();
@@ -77,8 +102,8 @@ contract UniV2TwapOracle is Initializable, BaseOracle {
 		uint112 reserve1;
 		(reserve0, reserve1, blockTimestampLast) = pair.getReserves();
 
-		require(reserve0 != 0 && reserve1 != 0, "NO_RESERVES"); // Ensure that there's liquidity in the pair
-		require(_period >= 10, "PERIOD_BELOW_MIN"); // Ensure period has a min time
+		if (reserve0 == 0 || reserve1 == 0) revert NoReserves(); // Ensure that there's liquidity in the pair
+		if (_period < PERIOD_MIN) revert PeriodBelowMin(); // Ensure period has a min time
 
 		period = _period;
 		consultLeniency = _consultLeniency;
@@ -92,8 +117,9 @@ contract UniV2TwapOracle is Initializable, BaseOracle {
 	 * @param _period TWAP period.
 	 */
 	function setPeriod(uint256 _period) external onlyOwner {
-		require(_period >= 10, "PERIOD_BELOW_MIN"); // Ensure period has a min time
+		if (_period < PERIOD_MIN) revert PeriodBelowMin(); // Ensure period has a min time
 		period = _period;
+		emit PeriodUpdated(_period);
 	}
 
 	/**
@@ -102,6 +128,7 @@ contract UniV2TwapOracle is Initializable, BaseOracle {
 	 */
 	function setConsultLeniency(uint256 _consultLeniency) external onlyOwner {
 		consultLeniency = _consultLeniency;
+		emit ConsultLeniencyUpdated(_consultLeniency);
 	}
 
 	/**
@@ -110,6 +137,7 @@ contract UniV2TwapOracle is Initializable, BaseOracle {
 	 */
 	function setAllowStaleConsults(bool _allowStaleConsults) external onlyOwner {
 		allowStaleConsults = _allowStaleConsults;
+		emit AllowStaleConsultsUpdated(_allowStaleConsults);
 	}
 
 	/**
@@ -117,7 +145,10 @@ contract UniV2TwapOracle is Initializable, BaseOracle {
 	 */
 	function canUpdate() public view override returns (bool) {
 		uint32 blockTimestamp = UniswapV2OracleLibrary.currentBlockTimestamp();
-		uint32 timeElapsed = blockTimestamp - blockTimestampLast; // Overflow is desired
+		uint32 timeElapsed;
+		unchecked {
+			timeElapsed = blockTimestamp - blockTimestampLast; // Overflow is desired
+		}
 		return (timeElapsed >= period);
 	}
 
@@ -127,18 +158,23 @@ contract UniV2TwapOracle is Initializable, BaseOracle {
 	function update() external {
 		(uint256 price0Cumulative, uint256 price1Cumulative, uint32 blockTimestamp) = UniswapV2OracleLibrary
 			.currentCumulativePrices(address(pair));
-		uint32 timeElapsed = blockTimestamp - blockTimestampLast; // Overflow is desired
+		uint32 timeElapsed;
+		unchecked {
+			timeElapsed = blockTimestamp - blockTimestampLast; // Overflow is desired
+		}
 
 		// Ensure that at least one full period has passed since the last update
-		require(timeElapsed >= period, "PERIOD_NOT_ELAPSED");
+		if (timeElapsed < period) revert PeriodNotElapsed();
 
 		// Overflow is desired, casting never truncates
 		// Cumulative price is in (uq112x112 price * seconds) units so we simply wrap it after division by time elapsed
-		price0Average = FixedPoint.uq112x112(uint224((price0Cumulative - price0CumulativeLast) / timeElapsed));
-		price1Average = FixedPoint.uq112x112(uint224((price1Cumulative - price1CumulativeLast) / timeElapsed));
-		price0CumulativeLast = price0Cumulative;
-		price1CumulativeLast = price1Cumulative;
-		blockTimestampLast = blockTimestamp;
+		unchecked {
+			price0Average = FixedPoint.uq112x112(uint224((price0Cumulative - price0CumulativeLast) / timeElapsed));
+			price1Average = FixedPoint.uq112x112(uint224((price1Cumulative - price1CumulativeLast) / timeElapsed));
+			price0CumulativeLast = price0Cumulative;
+			price1CumulativeLast = price1Cumulative;
+			blockTimestampLast = blockTimestamp;
+		}
 	}
 
 	/**
@@ -146,15 +182,18 @@ contract UniV2TwapOracle is Initializable, BaseOracle {
 	 */
 	function _consult(address _token, uint256 _amountIn) internal view returns (uint256 amountOut) {
 		uint32 blockTimestamp = UniswapV2OracleLibrary.currentBlockTimestamp();
-		uint32 timeElapsed = blockTimestamp - blockTimestampLast; // Overflow is desired
+		uint32 timeElapsed;
+		unchecked {
+			timeElapsed = blockTimestamp - blockTimestampLast; // Overflow is desired
+		}
 
 		// Ensure that the price is not stale
-		require((timeElapsed < (period + consultLeniency)) || allowStaleConsults, "PRICE_IS_STALE_CALL_UPDATE");
+		if ((timeElapsed >= (period + consultLeniency)) && !allowStaleConsults) revert PriceIsStale();
 
 		if (_token == token0) {
 			amountOut = price0Average.mul(_amountIn).decode144();
 		} else {
-			require(_token == token1, "UniswapPairOracle: INVALID_TOKEN");
+			if (_token != token1) revert InvalidToken();
 			amountOut = price1Average.mul(_amountIn).decode144();
 		}
 	}
@@ -162,7 +201,7 @@ contract UniV2TwapOracle is Initializable, BaseOracle {
 	/**
 	 * @notice Returns current price.
 	 */
-	function consult() public view override returns (uint256 amountOut) {
+	function consult() public view override returns (uint256) {
 		uint8 decimals = IERC20Metadata(token).decimals();
 		return _consult(token, 10 ** decimals);
 	}

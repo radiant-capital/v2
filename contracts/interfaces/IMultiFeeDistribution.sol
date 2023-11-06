@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: MIT
 
 pragma solidity 0.8.12;
-pragma abicoder v2;
 
 import "./LockedBalance.sol";
 import "./IFeeDistribution.sol";
@@ -26,9 +25,15 @@ interface IMultiFeeDistribution is IFeeDistribution {
 
 	function totalBalance(address user) external view returns (uint256);
 
-	function zapVestingToLp(address _address) external returns (uint256);
+	function lockedBalance(address user) external view returns (uint256);
 
-	function withdrawExpiredLocksFor(address _address) external returns (uint256);
+	function lockedBalances(
+		address user
+	) external view returns (uint256, uint256, uint256, uint256, LockedBalance[] memory);
+
+	function getBalances(address _user) external view returns (Balances memory);
+
+	function zapVestingToLp(address _address) external returns (uint256);
 
 	function claimableRewards(address account) external view returns (IFeeDistribution.RewardData[] memory rewards);
 
@@ -38,9 +43,11 @@ interface IMultiFeeDistribution is IFeeDistribution {
 
 	function stakingToken() external view returns (address);
 
+	function userSlippage(address) external view returns (uint256);
+
 	function claimFromConverter(address) external;
 
-	function mint(address user, uint256 amount, bool withPenalty) external;
+	function vestTokens(address user, uint256 amount, bool withPenalty) external;
 }
 
 interface IMFDPlus is IMultiFeeDistribution {
@@ -48,9 +55,13 @@ interface IMFDPlus is IMultiFeeDistribution {
 
 	function claimBounty(address _user, bool _execute) external returns (bool issueBaseBounty);
 
-	function claimCompound(address _user, bool _execute) external returns (uint256 bountyAmt);
+	function claimCompound(address _user, bool _execute, uint256 _slippage) external returns (uint256 bountyAmt);
 
 	function setAutocompound(bool _newVal) external;
+
+	function setUserSlippage(uint256 slippage) external;
+
+	function toggleAutocompound() external;
 
 	function getAutocompoundEnabled(address _user) external view returns (bool);
 }
