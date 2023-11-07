@@ -1,31 +1,30 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.12;
-pragma abicoder v2;
 
-import "@openzeppelin/contracts/utils/math/SafeMath.sol";
-import "@openzeppelin/contracts-upgradeable/access/OwnableUpgradeable.sol";
+import {OwnableUpgradeable} from "@openzeppelin/contracts-upgradeable/access/OwnableUpgradeable.sol";
 
-import "../../interfaces/ILendingPool.sol";
-import "../../interfaces/IMultiFeeDistribution.sol";
-import "../../interfaces/IChefIncentivesController.sol";
-import "../../interfaces/IPriceProvider.sol";
-import "../../interfaces/IMiddleFeeDistribution.sol";
-import "../../interfaces/LockedBalance.sol";
-import "../../interfaces/uniswap/IUniswapV2Router02.sol";
-import "../../interfaces/uniswap/IUniswapV2Factory.sol";
-import "../../interfaces/uniswap/IUniswapV2Pair.sol";
-import "../../interfaces/IChainlinkAggregator.sol";
+import {ILendingPool} from "../../interfaces/ILendingPool.sol";
+import {IMultiFeeDistribution} from "../../interfaces/IMultiFeeDistribution.sol";
+import {IChefIncentivesController} from "../../interfaces/IChefIncentivesController.sol";
+import {IPriceProvider} from "../../interfaces/IPriceProvider.sol";
+import {LockedBalance, Balances} from "../../interfaces/LockedBalance.sol";
 
 /// @title Eligible Deposit Provider
 /// @author Radiant Labs
-/// @dev All function calls are currently implemented without side effects
 contract EligibilityDataProvider is OwnableUpgradeable {
-	using SafeMath for uint256;
-
 	/********************** Common Info ***********************/
 
 	/// @notice RATIO BASE equal to 100%
 	uint256 public constant RATIO_DIVISOR = 10000;
+
+	/// @notice Initial required ratio of TVL to get reward; in bips
+	uint256 public constant INITIAL_REQUIRED_DEPOSIT_RATIO = 500;
+
+	/// @notice Initial ratio of the required price to still allow without disqualification; in bips
+	uint256 public constant INITIAL_PRICE_TOLERANCE_RATIO = 9000;
+
+	/// @notice Minimum required ratio of TVL to get reward; in bips
+	uint256 public constant MIN_PRICE_TOLERANCE_RATIO = 8000;
 
 	/// @notice Address of Lending Pool
 	ILendingPool public lendingPool;
@@ -33,8 +32,8 @@ contract EligibilityDataProvider is OwnableUpgradeable {
 	/// @notice Address of CIC
 	IChefIncentivesController public chef;
 
-	/// @notice Address of Middle fee distribution
-	IMiddleFeeDistribution public middleFeeDistribution;
+	/// @notice Address of MultiFeeDistribution contract
+	IMultiFeeDistribution public multiFeeDistribution;
 
 	/// @notice RDNT + LP price provider
 	IPriceProvider public priceProvider;
@@ -56,52 +55,56 @@ contract EligibilityDataProvider is OwnableUpgradeable {
 	/// @notice Disqualified time of the user
 	mapping(address => uint256) public disqualifiedTime;
 
-	// Elgible deposits per rToken
-	mapping(address => uint256) private eligibleDeposits;
-
-	/// @notice User's deposits per rToken; rToken => user => amount
-	mapping(address => mapping(address => uint256)) public userDeposits;
-
 	/********************** Events ***********************/
 
 	/// @notice Emitted when CIC is set
-	event ChefIncentivesControllerUpdated(IChefIncentivesController _chef);
+	event ChefIncentivesControllerUpdated(IChefIncentivesController indexed _chef);
 
 	/// @notice Emitted when LP token is set
-	event LPTokenUpdated(address _lpToken);
+	event LPTokenUpdated(address indexed _lpToken);
 
 	/// @notice Emitted when required TVL ratio is updated
-	event RequiredDepositRatioUpdated(uint256 requiredDepositRatio);
+	event RequiredDepositRatioUpdated(uint256 indexed requiredDepositRatio);
 
 	/// @notice Emitted when price tolerance ratio is updated
-	event PriceToleranceRatioUpdated(uint256 priceToleranceRatio);
+	event PriceToleranceRatioUpdated(uint256 indexed priceToleranceRatio);
 
 	/// @notice Emitted when DQ time is set
-	event DqTimeUpdated(address _user, uint256 _time);
+	event DqTimeUpdated(address indexed _user, uint256 _time);
 
-	/// @notice Emitted when a new token is added
-	event AddToken(address indexed token);
+	/********************** Errors ***********************/
+	error AddressZero();
+
+	error LPTokenSet();
+
+	error InvalidRatio();
+
+	error OnlyCIC();
+
+	constructor() {
+		_disableInitializers();
+	}
 
 	/**
 	 * @notice Constructor
 	 * @param _lendingPool Address of lending pool.
-	 * @param _middleFeeDistribution MiddleFeeDistribution address.
+	 * @param _multiFeeDistribution MultiFeeDistribution contract address.
 	 * @param _priceProvider PriceProvider address.
 	 */
 	function initialize(
 		ILendingPool _lendingPool,
-		IMiddleFeeDistribution _middleFeeDistribution,
+		IMultiFeeDistribution _multiFeeDistribution,
 		IPriceProvider _priceProvider
 	) public initializer {
-		require(address(_lendingPool) != address(0), "Not a valid address");
-		require(address(_middleFeeDistribution) != (address(0)), "Not a valid address");
-		require(address(_priceProvider) != (address(0)), "Not a valid address");
+		if (address(_lendingPool) == address(0)) revert AddressZero();
+		if (address(_multiFeeDistribution) == address(0)) revert AddressZero();
+		if (address(_priceProvider) == address(0)) revert AddressZero();
 
 		lendingPool = _lendingPool;
-		middleFeeDistribution = _middleFeeDistribution;
+		multiFeeDistribution = _multiFeeDistribution;
 		priceProvider = _priceProvider;
-		requiredDepositRatio = 500;
-		priceToleranceRatio = 9000;
+		requiredDepositRatio = INITIAL_REQUIRED_DEPOSIT_RATIO;
+		priceToleranceRatio = INITIAL_PRICE_TOLERANCE_RATIO;
 		__Ownable_init();
 	}
 
@@ -112,7 +115,7 @@ contract EligibilityDataProvider is OwnableUpgradeable {
 	 * @param _chef address.
 	 */
 	function setChefIncentivesController(IChefIncentivesController _chef) external onlyOwner {
-		require(address(_chef) != address(0), "chef is 0 address");
+		if (address(_chef) == address(0)) revert AddressZero();
 		chef = _chef;
 		emit ChefIncentivesControllerUpdated(_chef);
 	}
@@ -121,7 +124,8 @@ contract EligibilityDataProvider is OwnableUpgradeable {
 	 * @notice Set LP token
 	 */
 	function setLPToken(address _lpToken) external onlyOwner {
-		require(lpToken == address(0), "LP token already set");
+		if (_lpToken == address(0)) revert AddressZero();
+		if (lpToken != address(0)) revert LPTokenSet();
 		lpToken = _lpToken;
 
 		emit LPTokenUpdated(_lpToken);
@@ -132,7 +136,7 @@ contract EligibilityDataProvider is OwnableUpgradeable {
 	 * @param _requiredDepositRatio Ratio in bips.
 	 */
 	function setRequiredDepositRatio(uint256 _requiredDepositRatio) external onlyOwner {
-		require(_requiredDepositRatio <= RATIO_DIVISOR, "Invalid ratio");
+		if (_requiredDepositRatio > RATIO_DIVISOR) revert InvalidRatio();
 		requiredDepositRatio = _requiredDepositRatio;
 
 		emit RequiredDepositRatioUpdated(_requiredDepositRatio);
@@ -143,7 +147,8 @@ contract EligibilityDataProvider is OwnableUpgradeable {
 	 * @param _priceToleranceRatio Ratio in bips.
 	 */
 	function setPriceToleranceRatio(uint256 _priceToleranceRatio) external onlyOwner {
-		require(_priceToleranceRatio >= 8000 && _priceToleranceRatio <= RATIO_DIVISOR, "Invalid ratio");
+		if (_priceToleranceRatio < MIN_PRICE_TOLERANCE_RATIO || _priceToleranceRatio > RATIO_DIVISOR)
+			revert InvalidRatio();
 		priceToleranceRatio = _priceToleranceRatio;
 
 		emit PriceToleranceRatioUpdated(_priceToleranceRatio);
@@ -156,7 +161,7 @@ contract EligibilityDataProvider is OwnableUpgradeable {
 	 * @param _time for DQ
 	 */
 	function setDqTime(address _user, uint256 _time) external {
-		require(msg.sender == address(chef), "Only CIC");
+		if (msg.sender != address(chef)) revert OnlyCIC();
 		disqualifiedTime[_user] = _time;
 
 		emit DqTimeUpdated(_user, _time);
@@ -169,11 +174,8 @@ contract EligibilityDataProvider is OwnableUpgradeable {
 	 * @param user's address
 	 */
 	function lockedUsdValue(address user) public view returns (uint256) {
-		IMultiFeeDistribution multiFeeDistribution = IMultiFeeDistribution(
-			middleFeeDistribution.getMultiFeeDistributionAddress()
-		);
-		(, , uint256 lockedLP, , ) = multiFeeDistribution.lockedBalances(user);
-		return _lockedUsdValue(lockedLP);
+		Balances memory _balances = IMultiFeeDistribution(multiFeeDistribution).getBalances(user);
+		return _lockedUsdValue(_balances.locked);
 	}
 
 	/**
@@ -183,24 +185,16 @@ contract EligibilityDataProvider is OwnableUpgradeable {
 	 */
 	function requiredUsdValue(address user) public view returns (uint256 required) {
 		(uint256 totalCollateralUSD, , , , , ) = lendingPool.getUserAccountData(user);
-		required = totalCollateralUSD.mul(requiredDepositRatio).div(RATIO_DIVISOR);
-	}
-
-	/**
-	 * @notice Is user DQed due to lock expire or price update
-	 * @param _user's address
-	 */
-	function isMarketDisqualified(address _user) public view returns (bool) {
-		return requiredUsdValue(_user) > 0 && !isEligibleForRewards(_user) && lastEligibleTime(_user) > block.timestamp;
+		required = (totalCollateralUSD * requiredDepositRatio) / RATIO_DIVISOR;
 	}
 
 	/**
 	 * @notice Returns if the user is eligible to receive rewards
 	 * @param _user's address
 	 */
-	function isEligibleForRewards(address _user) public view returns (bool isEligible) {
+	function isEligibleForRewards(address _user) public view returns (bool) {
 		uint256 lockedValue = lockedUsdValue(_user);
-		uint256 requiredValue = requiredUsdValue(_user).mul(priceToleranceRatio).div(RATIO_DIVISOR);
+		uint256 requiredValue = (requiredUsdValue(_user) * priceToleranceRatio) / RATIO_DIVISOR;
 		return requiredValue != 0 && lockedValue >= requiredValue;
 	}
 
@@ -218,24 +212,27 @@ contract EligibilityDataProvider is OwnableUpgradeable {
 	 *  CAUTION: this function only works perfect when the array
 	 *  is ordered by lock time. This is assured when _stake happens.
 	 * @param user's address
+	 * @return lastEligibleTimestamp of the user. Returns 0 if user is not eligible.
 	 */
 	function lastEligibleTime(address user) public view returns (uint256 lastEligibleTimestamp) {
+		if (!isEligibleForRewards(user)) {
+			return 0;
+		}
+
 		uint256 requiredValue = requiredUsdValue(user);
 
-		IMultiFeeDistribution multiFeeDistribution = IMultiFeeDistribution(
-			middleFeeDistribution.getMultiFeeDistributionAddress()
-		);
-		LockedBalance[] memory lpLockData = multiFeeDistribution.lockInfo(user);
+		LockedBalance[] memory lpLockData = IMultiFeeDistribution(multiFeeDistribution).lockInfo(user);
 
 		uint256 lockedLP;
-		uint256 i = lpLockData.length;
-		while (i > 0) {
-			i = i - 1;
-			lastEligibleTimestamp = lpLockData[i].unlockTime;
-			lockedLP = lockedLP + lpLockData[i].amount;
+		for (uint256 i = lpLockData.length; i > 0; ) {
+			LockedBalance memory currentLockData = lpLockData[i - 1];
+			lockedLP += currentLockData.amount;
 
 			if (_lockedUsdValue(lockedLP) >= requiredValue) {
-				break;
+				return currentLockData.unlockTime;
+			}
+			unchecked {
+				i--;
 			}
 		}
 	}
@@ -243,17 +240,19 @@ contract EligibilityDataProvider is OwnableUpgradeable {
 	/********************** Operate functions ***********************/
 	/**
 	 * @notice Refresh token amount for eligibility
-	 * @param user's address
+	 * @param user The address of the user
+	 * @return currentEligibility The current eligibility status of the user
 	 */
-	function refresh(address user) external {
-		require(msg.sender == address(chef), "Can only be called by CIC");
-		assert(user != address(0));
+	function refresh(address user) external returns (bool currentEligibility) {
+		if (msg.sender != address(chef)) revert OnlyCIC();
+		if (user == address(0)) revert AddressZero();
 
-		bool currentEligble = isEligibleForRewards(user);
-		if (currentEligble && disqualifiedTime[user] != 0) {
+		updatePrice();
+		currentEligibility = isEligibleForRewards(user);
+		if (currentEligibility && disqualifiedTime[user] != 0) {
 			disqualifiedTime[user] = 0;
 		}
-		lastEligibleStatus[user] = currentEligble;
+		lastEligibleStatus[user] = currentEligibility;
 	}
 
 	/**
@@ -266,11 +265,11 @@ contract EligibilityDataProvider is OwnableUpgradeable {
 	/********************** Internal functions ***********************/
 
 	/**
-	 * @notice Returns locked RDNT and LP token value in eth
+	 * @notice Returns locked RDNT and LP token value in USD
 	 * @param lockedLP is locked lp amount
 	 */
 	function _lockedUsdValue(uint256 lockedLP) internal view returns (uint256) {
 		uint256 lpPrice = priceProvider.getLpTokenPriceUsd();
-		return lockedLP.mul(lpPrice).div(10 ** 18);
+		return (lockedLP * lpPrice) / 10 ** 18;
 	}
 }

@@ -15,5 +15,7 @@ interface IPriceProvider {
 
 	function update() external;
 
-	function baseTokenPriceInUsdProxyAggregator() external view returns (address);
+	function getRewardTokenPrice(address rewardToken, uint256 amount) external view returns (uint256);
+
+	function baseAssetChainlinkAdapter() external view returns (address);
 }

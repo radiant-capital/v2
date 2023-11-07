@@ -1,20 +1,14 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.12;
 
-import "./BaseOracle.sol";
-import "@uniswap/v3-core/contracts/interfaces/IUniswapV3Pool.sol";
-import "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
-import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
-import "@openzeppelin/contracts/utils/math/SafeMath.sol";
-import "@uniswap/v3-periphery/contracts/libraries/OracleLibrary.sol";
-import "@uniswap/v3-core/contracts/UniswapV3Factory.sol";
+import {BaseOracle} from "../BaseOracle.sol";
+import {IUniswapV3Pool} from "@uniswap/v3-core/contracts/interfaces/IUniswapV3Pool.sol";
+import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
+import {OracleLibrary} from "@uniswap/v3-periphery/contracts/libraries/OracleLibrary.sol";
 
-import "../../dependencies/openzeppelin/upgradeability/Initializable.sol";
-import "../../dependencies/openzeppelin/upgradeability/OwnableUpgradeable.sol";
-
-contract UniV3TwapOracle is Initializable, BaseOracle {
-	using SafeMath for uint256;
-
+/// @title UniV3TwapOracle Contract
+/// @author Radiant
+contract UniV3TwapOracle is BaseOracle {
 	/// @notice Uniswap V3 pool address
 	IUniswapV3Pool public pool;
 
@@ -30,11 +24,25 @@ contract UniV3TwapOracle is Initializable, BaseOracle {
 	/// @notice Decimal of token1
 	uint8 public decimals1;
 
-	/// @notice TWAP loopback period
+	/// @notice TWAP lookback period
 	uint32 public lookbackSecs;
 
 	/// @notice Can flip the order of the pricing
 	bool public priceInToken0;
+
+	/********************** Events ***********************/
+
+	event ObservationCardinalityIncreased(uint16 indexed numCardinals);
+
+	event TWAPLookbackSecUpdated(uint32 indexed _secs);
+
+	event TokenForPricingToggled();
+
+	error InvalidLoopbackSecs();
+
+	constructor() {
+		_disableInitializers();
+	}
 
 	/**
 	 * @notice Initializer
@@ -48,9 +56,11 @@ contract UniV3TwapOracle is Initializable, BaseOracle {
 		address _ethChainlinkFeed,
 		uint32 _lookbackSecs
 	) external initializer {
-		require(_pair != address(0), "pair is 0 address");
-		require(_rdnt != address(0), "rdnt is 0 address");
-		require(_ethChainlinkFeed != address(0), "ethChainlinkFeed is 0 address");
+		if (_pair == address(0)) revert AddressZero();
+		if (_rdnt == address(0)) revert AddressZero();
+		if (_ethChainlinkFeed == address(0)) revert AddressZero();
+		if (_lookbackSecs == 0) revert InvalidLoopbackSecs();
+
 		pool = IUniswapV3Pool(_pair);
 		token0 = IERC20Metadata(pool.token0());
 		token1 = IERC20Metadata(pool.token1());
@@ -71,14 +81,17 @@ contract UniV3TwapOracle is Initializable, BaseOracle {
 	 */
 	function increaseObservationCardinality(uint16 numCardinals) external onlyOwner {
 		pool.increaseObservationCardinalityNext(numCardinals);
+		emit ObservationCardinalityIncreased(numCardinals);
 	}
 
 	/**
-	 * @notice Sets new TWAP loopback period
-	 * @param _secs Loopback period in seconds
+	 * @notice Sets new TWAP lookback period
+	 * @param _secs Lookback period in seconds
 	 */
 	function setTWAPLookbackSec(uint32 _secs) external onlyOwner {
+		if (_secs == 0) revert InvalidLoopbackSecs();
 		lookbackSecs = _secs;
+		emit TWAPLookbackSecUpdated(_secs);
 	}
 
 	/**
@@ -86,6 +99,7 @@ contract UniV3TwapOracle is Initializable, BaseOracle {
 	 */
 	function toggleTokenForPricing() external onlyOwner {
 		priceInToken0 = !priceInToken0;
+		emit TokenForPricingToggled();
 	}
 
 	/* ========== VIEWS ========== */
@@ -116,23 +130,43 @@ contract UniV3TwapOracle is Initializable, BaseOracle {
 		// Get the quote for selling 1 unit of a token. Assumes 1e18 for both.
 		if (priceInToken0) {
 			if (decimals0 <= 18) {
-				amountOut = OracleLibrary
-					.getQuoteAtTick(arithmeticMeanTick, uint128(10 ** decimals1), address(token1), address(token0))
-					.mul(10 ** (18 - decimals0));
+				amountOut =
+					OracleLibrary.getQuoteAtTick(
+						arithmeticMeanTick,
+						uint128(10 ** decimals1),
+						address(token1),
+						address(token0)
+					) *
+					(10 ** (18 - decimals0));
 			} else {
-				amountOut = OracleLibrary
-					.getQuoteAtTick(arithmeticMeanTick, uint128(10 ** decimals1), address(token1), address(token0))
-					.div(10 ** (decimals0 - 18));
+				amountOut =
+					OracleLibrary.getQuoteAtTick(
+						arithmeticMeanTick,
+						uint128(10 ** decimals1),
+						address(token1),
+						address(token0)
+					) /
+					(10 ** (decimals0 - 18));
 			}
 		} else {
 			if (decimals1 <= 18) {
-				amountOut = OracleLibrary
-					.getQuoteAtTick(arithmeticMeanTick, uint128(10 ** decimals0), address(token0), address(token1))
-					.mul(10 ** (18 - decimals1));
+				amountOut =
+					OracleLibrary.getQuoteAtTick(
+						arithmeticMeanTick,
+						uint128(10 ** decimals0),
+						address(token0),
+						address(token1)
+					) *
+					(10 ** (18 - decimals1));
 			} else {
-				amountOut = OracleLibrary
-					.getQuoteAtTick(arithmeticMeanTick, uint128(10 ** decimals0), address(token0), address(token1))
-					.div(10 ** (decimals1 - 18));
+				amountOut =
+					OracleLibrary.getQuoteAtTick(
+						arithmeticMeanTick,
+						uint128(10 ** decimals0),
+						address(token0),
+						address(token1)
+					) /
+					(10 ** (decimals1 - 18));
 			}
 		}
 	}
@@ -147,11 +181,7 @@ contract UniV3TwapOracle is Initializable, BaseOracle {
 	/**
 	 * @dev AggregatorV3Interface / Chainlink compatibility.
 	 */
-	function latestRoundData()
-		external
-		view
-		returns (uint80 roundId, int256 answer, uint256 startedAt, uint256 updatedAt, uint80 answeredInRound)
-	{
+	function latestRoundData() external view returns (uint80, int256, uint256, uint256, uint80) {
 		return (0, int256(getPrecisePrice()), 0, block.timestamp, 0);
 	}
 }

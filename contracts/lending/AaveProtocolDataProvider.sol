@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: agpl-3.0
+// SPDX-License-Identifier: AGPL-3.0
 pragma solidity 0.8.12;
 pragma experimental ABIEncoderV2;
 
@@ -33,7 +33,7 @@ contract AaveProtocolDataProvider {
 		ILendingPool pool = ILendingPool(ADDRESSES_PROVIDER.getLendingPool());
 		address[] memory reserves = pool.getReservesList();
 		TokenData[] memory reservesTokens = new TokenData[](reserves.length);
-		for (uint256 i = 0; i < reserves.length; i++) {
+		for (uint256 i = 0; i < reserves.length; ) {
 			if (reserves[i] == MKR) {
 				reservesTokens[i] = TokenData({symbol: "MKR", tokenAddress: reserves[i]});
 				continue;
@@ -43,6 +43,9 @@ contract AaveProtocolDataProvider {
 				continue;
 			}
 			reservesTokens[i] = TokenData({symbol: IERC20Metadata(reserves[i]).symbol(), tokenAddress: reserves[i]});
+			unchecked {
+				i++;
+			}
 		}
 		return reservesTokens;
 	}
@@ -51,12 +54,15 @@ contract AaveProtocolDataProvider {
 		ILendingPool pool = ILendingPool(ADDRESSES_PROVIDER.getLendingPool());
 		address[] memory reserves = pool.getReservesList();
 		TokenData[] memory aTokens = new TokenData[](reserves.length);
-		for (uint256 i = 0; i < reserves.length; i++) {
+		for (uint256 i = 0; i < reserves.length; ) {
 			DataTypes.ReserveData memory reserveData = pool.getReserveData(reserves[i]);
 			aTokens[i] = TokenData({
 				symbol: IERC20Metadata(reserveData.aTokenAddress).symbol(),
 				tokenAddress: reserveData.aTokenAddress
 			});
+			unchecked {
+				i++;
+			}
 		}
 		return aTokens;
 	}

@@ -4,26 +4,17 @@ pragma solidity 0.8.12;
 interface ILiquidityZap {
 	function _WETH() external view returns (address);
 
-	function _token() external view returns (address);
+	function token() external view returns (address);
 
-	function _tokenWETHPair() external view returns (address);
+	function tokenWETHPair() external view returns (address);
 
 	function addLiquidityETHOnly(address to) external returns (uint256 liquidity);
 
-	function addLiquidityTokensOnly(
-		address from,
-		address to,
-		uint256 amount
-	) external returns (uint256 liquidity);
+	function addLiquidityTokensOnly(address from, address to, uint256 amount) external returns (uint256 liquidity);
 
 	function getLPTokenPerEthUnit(uint256 ethAmt) external view returns (uint256 liquidity);
 
-	function initLiquidityZap(
-		address token,
-		address WETH,
-		address tokenWethPair,
-		address helper
-	) external;
+	function initLiquidityZap(address token, address WETH, address tokenWethPair, address helper) external;
 
 	function quote(uint256 wethAmount) external view returns (uint256 optimalTokenAmount);
 

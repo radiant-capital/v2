@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: agpl-3.0
+// SPDX-License-Identifier: AGPL-3.0
 pragma solidity 0.8.12;
 pragma experimental ABIEncoderV2;
 
@@ -38,7 +38,7 @@ contract WETHGateway is IWETHGateway, Ownable {
 	 * @param onBehalfOf address of the user who will receive the aTokens representing the deposit
 	 * @param referralCode integrators are assigned a referral code and can potentially receive rewards.
 	 **/
-	function depositETH(address lendingPool, address onBehalfOf, uint16 referralCode) external payable override {
+	function depositETH(address lendingPool, address onBehalfOf, uint16 referralCode) external payable {
 		WETH.deposit{value: msg.value}();
 		ILendingPool(lendingPool).deposit(address(WETH), msg.value, onBehalfOf, referralCode);
 	}
@@ -54,12 +54,12 @@ contract WETHGateway is IWETHGateway, Ownable {
 	 * @param amount amount of aWETH to withdraw and receive native ETH
 	 * @param to address of the user who will receive native ETH
 	 */
-	function withdrawETH(address lendingPool, uint256 amount, address to) external override {
+	function withdrawETH(address lendingPool, uint256 amount, address to) external {
 		IAToken aWETH = IAToken(ILendingPool(lendingPool).getReserveData(address(WETH)).aTokenAddress);
 		uint256 userBalance = aWETH.balanceOf(msg.sender);
 		uint256 amountToWithdraw = amount;
 
-		// if amount is equal to uint(-1), the user wants to redeem everything
+		// if amount is equal to uint256(-1), the user wants to redeem everything
 		if (amount == type(uint256).max) {
 			amountToWithdraw = userBalance;
 		}
@@ -76,12 +76,7 @@ contract WETHGateway is IWETHGateway, Ownable {
 	 * @param rateMode the rate mode to repay
 	 * @param onBehalfOf the address for which msg.sender is repaying
 	 */
-	function repayETH(
-		address lendingPool,
-		uint256 amount,
-		uint256 rateMode,
-		address onBehalfOf
-	) external payable override {
+	function repayETH(address lendingPool, uint256 amount, uint256 rateMode, address onBehalfOf) external payable {
 		(uint256 stableDebt, uint256 variableDebt) = Helpers.getUserCurrentDebtMemory(
 			onBehalfOf,
 			ILendingPool(lendingPool).getReserveData(address(WETH))
@@ -109,12 +104,7 @@ contract WETHGateway is IWETHGateway, Ownable {
 	 * @param interesRateMode the interest rate mode
 	 * @param referralCode integrators are assigned a referral code and can potentially receive rewards
 	 */
-	function borrowETH(
-		address lendingPool,
-		uint256 amount,
-		uint256 interesRateMode,
-		uint16 referralCode
-	) external override {
+	function borrowETH(address lendingPool, uint256 amount, uint256 interesRateMode, uint16 referralCode) external {
 		ILendingPool(lendingPool).borrow(address(WETH), amount, interesRateMode, referralCode, msg.sender);
 		WETH.withdraw(amount);
 		_safeTransferETH(msg.sender, amount);

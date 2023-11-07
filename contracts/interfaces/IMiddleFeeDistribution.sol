@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: MIT
 
 pragma solidity 0.8.12;
-pragma abicoder v2;
 
 import "./LockedBalance.sol";
 import {IFeeDistribution} from "./IMultiFeeDistribution.sol";

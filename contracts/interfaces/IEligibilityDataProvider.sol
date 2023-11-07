@@ -3,7 +3,7 @@ pragma solidity 0.8.12;
 pragma experimental ABIEncoderV2;
 
 interface IEligibilityDataProvider {
-	function refresh(address user) external;
+	function refresh(address user) external returns (bool currentEligibility);
 
 	function updatePrice() external;
 
@@ -18,8 +18,6 @@ interface IEligibilityDataProvider {
 	function requiredUsdValue(address user) external view returns (uint256 required);
 
 	function lastEligibleStatus(address user) external view returns (bool);
-
-	function isMarketDisqualified(address user) external view returns (bool);
 
 	function rewardEligibleAmount(address token) external view returns (uint256);
 

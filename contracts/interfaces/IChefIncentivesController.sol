@@ -48,4 +48,12 @@ interface IChefIncentivesController {
 	function claimBounty(address _user, bool _execute) external returns (bool issueBaseBounty);
 
 	function setEligibilityExempt(address _address, bool _value) external;
+
+	function manualStopEmissionsFor(address _user, address[] memory _tokens) external;
+
+	function manualStopAllEmissionsFor(address _user) external;
+
+	function setAddressWLstatus(address user, bool status) external;
+
+	function toggleWhitelist() external;
 }

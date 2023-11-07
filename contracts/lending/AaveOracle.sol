@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: agpl-3.0
+// SPDX-License-Identifier: AGPL-3.0
 pragma solidity 0.8.12;
 
 import "@openzeppelin/contracts/access/Ownable.sol";
@@ -67,9 +67,13 @@ contract AaveOracle is IPriceOracleGetter, Ownable {
 	/// @param sources The address of the source of each asset
 	function _setAssetsSources(address[] memory assets, address[] memory sources) internal {
 		require(assets.length == sources.length, "INCONSISTENT_PARAMS_LENGTH");
-		for (uint256 i = 0; i < assets.length; i++) {
+		uint256 assetsLength = assets.length;
+		for (uint256 i = 0; i < assetsLength; ) {
 			assetsSources[assets[i]] = IChainlinkAggregator(sources[i]);
 			emit AssetSourceUpdated(assets[i], sources[i]);
+			unchecked {
+				i++;
+			}
 		}
 	}
 
@@ -82,7 +86,7 @@ contract AaveOracle is IPriceOracleGetter, Ownable {
 
 	/// @notice Gets an asset price by address
 	/// @param asset The asset address
-	function getAssetPrice(address asset) public view override returns (uint256) {
+	function getAssetPrice(address asset) public view returns (uint256) {
 		IChainlinkAggregator source = assetsSources[asset];
 
 		if (asset == BASE_CURRENCY) {
@@ -102,9 +106,13 @@ contract AaveOracle is IPriceOracleGetter, Ownable {
 	/// @notice Gets a list of prices from a list of assets addresses
 	/// @param assets The list of assets addresses
 	function getAssetsPrices(address[] calldata assets) external view returns (uint256[] memory) {
-		uint256[] memory prices = new uint256[](assets.length);
-		for (uint256 i = 0; i < assets.length; i++) {
+		uint256 length = assets.length;
+		uint256[] memory prices = new uint256[](length);
+		for (uint256 i = 0; i < length; ) {
 			prices[i] = getAssetPrice(assets[i]);
+			unchecked {
+				i++;
+			}
 		}
 		return prices;
 	}

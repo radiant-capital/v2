@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: agpl-3.0
+// SPDX-License-Identifier: AGPL-3.0
 pragma solidity 0.8.12;
 
 import {IVariableDebtToken} from "../../interfaces/IVariableDebtToken.sol";
@@ -22,6 +22,10 @@ contract VariableDebtToken is DebtTokenBase, IVariableDebtToken {
 	uint256 public constant DEBT_TOKEN_REVISION = 0x1;
 
 	IAaveIncentivesController internal _incentivesController;
+
+	constructor() {
+		_disableInitializers();
+	}
 
 	/**
 	 * @dev Initializes the debt token.

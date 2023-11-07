@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: agpl-3.0
+// SPDX-License-Identifier: AGPL-3.0
 pragma solidity 0.8.12;
 pragma experimental ABIEncoderV2;
 
@@ -47,20 +47,20 @@ contract UiPoolDataProviderV2V3 is IUiPoolDataProviderV3 {
 		);
 	}
 
-	function getReservesList(ILendingPoolAddressesProvider provider) public view override returns (address[] memory) {
+	function getReservesList(ILendingPoolAddressesProvider provider) public view returns (address[] memory) {
 		ILendingPool lendingPool = ILendingPool(provider.getLendingPool());
 		return lendingPool.getReservesList();
 	}
 
 	function getReservesData(
 		ILendingPoolAddressesProvider provider
-	) public view override returns (AggregatedReserveData[] memory, BaseCurrencyInfo memory) {
+	) public view returns (AggregatedReserveData[] memory, BaseCurrencyInfo memory) {
 		IAaveOracle oracle = IAaveOracle(provider.getPriceOracle());
 		ILendingPool lendingPool = ILendingPool(provider.getLendingPool());
 		address[] memory reserves = lendingPool.getReservesList();
 		AggregatedReserveData[] memory reservesData = new AggregatedReserveData[](reserves.length);
 
-		for (uint256 i = 0; i < reserves.length; i++) {
+		for (uint256 i = 0; i < reserves.length; ) {
 			AggregatedReserveData memory reserveData = reservesData[i];
 			reserveData.underlyingAsset = reserves[i];
 
@@ -119,6 +119,9 @@ contract UiPoolDataProviderV2V3 is IUiPoolDataProviderV3 {
 			) = getInterestRateStrategySlopes(
 				DefaultReserveInterestRateStrategy(reserveData.interestRateStrategyAddress)
 			);
+			unchecked {
+				i++;
+			}
 		}
 
 		BaseCurrencyInfo memory baseCurrencyInfo;
@@ -146,14 +149,14 @@ contract UiPoolDataProviderV2V3 is IUiPoolDataProviderV3 {
 	function getUserReservesData(
 		ILendingPoolAddressesProvider provider,
 		address user
-	) external view override returns (UserReserveData[] memory, uint8) {
+	) external view returns (UserReserveData[] memory, uint8) {
 		ILendingPool lendingPool = ILendingPool(provider.getLendingPool());
 		address[] memory reserves = lendingPool.getReservesList();
 		DataTypes.UserConfigurationMap memory userConfig = lendingPool.getUserConfiguration(user);
 
 		UserReserveData[] memory userReservesData = new UserReserveData[](user != address(0) ? reserves.length : 0);
 
-		for (uint256 i = 0; i < reserves.length; i++) {
+		for (uint256 i = 0; i < reserves.length; ) {
 			DataTypes.ReserveData memory baseData = lendingPool.getReserveData(reserves[i]);
 
 			// user reserve data
@@ -174,6 +177,9 @@ contract UiPoolDataProviderV2V3 is IUiPoolDataProviderV3 {
 					).getUserLastUpdated(user);
 				}
 			}
+			unchecked {
+				i++;
+			}
 		}
 
 		// Return 0 to be compatible with v3 userEmodeCategoryId return
@@ -186,8 +192,11 @@ contract UiPoolDataProviderV2V3 is IUiPoolDataProviderV3 {
 			i++;
 		}
 		bytes memory bytesArray = new bytes(i);
-		for (i = 0; i < 32 && _bytes32[i] != 0; i++) {
+		for (i = 0; i < 32 && _bytes32[i] != 0; ) {
 			bytesArray[i] = _bytes32[i];
+			unchecked {
+				i++;
+			}
 		}
 		return string(bytesArray);
 	}

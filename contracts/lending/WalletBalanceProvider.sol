@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: agpl-3.0
+// SPDX-License-Identifier: AGPL-3.0
 pragma solidity 0.8.12;
 
 pragma experimental ABIEncoderV2;
@@ -63,9 +63,15 @@ contract WalletBalanceProvider {
 	) external view returns (uint256[] memory) {
 		uint256[] memory balances = new uint256[](users.length * tokens.length);
 
-		for (uint256 i = 0; i < users.length; i++) {
-			for (uint256 j = 0; j < tokens.length; j++) {
+		for (uint256 i = 0; i < users.length; ) {
+			for (uint256 j = 0; j < tokens.length; ) {
 				balances[i * tokens.length + j] = balanceOf(users[i], tokens[j]);
+				unchecked {
+					j++;
+				}
+			}
+			unchecked {
+				i++;
 			}
 		}
 
@@ -83,14 +89,17 @@ contract WalletBalanceProvider {
 
 		address[] memory reserves = pool.getReservesList();
 		address[] memory reservesWithEth = new address[](reserves.length + 1);
-		for (uint256 i = 0; i < reserves.length; i++) {
+		for (uint256 i = 0; i < reserves.length; ) {
 			reservesWithEth[i] = reserves[i];
+			unchecked {
+				i++;
+			}
 		}
 		reservesWithEth[reserves.length] = MOCK_ETH_ADDRESS;
 
 		uint256[] memory balances = new uint256[](reservesWithEth.length);
 
-		for (uint256 j = 0; j < reserves.length; j++) {
+		for (uint256 j = 0; j < reserves.length; ) {
 			DataTypes.ReserveConfigurationMap memory configuration = pool.getConfiguration(reservesWithEth[j]);
 
 			(bool isActive, , , ) = configuration.getFlagsMemory();
@@ -100,6 +109,9 @@ contract WalletBalanceProvider {
 				continue;
 			}
 			balances[j] = balanceOf(user, reservesWithEth[j]);
+			unchecked {
+				j++;
+			}
 		}
 		balances[reserves.length] = balanceOf(user, MOCK_ETH_ADDRESS);
 

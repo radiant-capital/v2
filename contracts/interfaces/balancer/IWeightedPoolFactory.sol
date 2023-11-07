@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: agpl-3.0
 pragma solidity 0.8.12;
-pragma abicoder v2;
+
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 
 interface IBasePool is IERC20 {
@@ -27,7 +27,8 @@ interface IWeightedPoolFactory {
 		uint256[] memory weights,
 		address[] memory rateProviders,
 		uint256 swapFeePercentage,
-		address owner
+		address owner,
+		bytes32 salt
 	) external returns (address);
 }
 
@@ -251,4 +252,32 @@ interface IVault {
 	);
 
 	function setPaused(bool paused) external;
+}
+
+interface IBalancerQueries {
+	function querySwap(
+		IVault.SingleSwap memory singleSwap,
+		IVault.FundManagement memory funds
+	) external returns (uint256);
+
+	function queryBatchSwap(
+		IVault.SwapKind kind,
+		IVault.BatchSwapStep[] memory swaps,
+		IAsset[] memory assets,
+		IVault.FundManagement memory funds
+	) external returns (int256[] memory assetDeltas);
+
+	function queryJoin(
+		bytes32 poolId,
+		address sender,
+		address recipient,
+		IVault.JoinPoolRequest memory request
+	) external returns (uint256 bptOut, uint256[] memory amountsIn);
+
+	function queryExit(
+		bytes32 poolId,
+		address sender,
+		address recipient,
+		IVault.ExitPoolRequest memory request
+	) external returns (uint256 bptIn, uint256[] memory amountsOut);
 }

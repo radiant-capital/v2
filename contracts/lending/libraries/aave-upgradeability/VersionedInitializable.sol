@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: agpl-3.0
+// SPDX-License-Identifier: AGPL-3.0
 pragma solidity 0.8.12;
 
 /**
@@ -27,18 +27,25 @@ abstract contract VersionedInitializable {
 	bool private initializing;
 
 	/**
+	 * @dev Indicates that the contract has been initialized.
+	 */
+	bool private initialized;
+
+	/**
 	 * @dev Modifier to use in the initializer function of a contract.
 	 */
 	modifier initializer() {
 		uint256 revision = getRevision();
+		bool isTopLevelCall = !initializing;
+
 		require(
-			initializing || isConstructor() || revision > lastInitializedRevision,
+			isTopLevelCall && (revision > lastInitializedRevision || !initialized),
 			"Contract instance has already been initialized"
 		);
 
-		bool isTopLevelCall = !initializing;
 		if (isTopLevelCall) {
 			initializing = true;
+			initialized = true;
 			lastInitializedRevision = revision;
 		}
 
@@ -55,21 +62,11 @@ abstract contract VersionedInitializable {
 	 **/
 	function getRevision() internal pure virtual returns (uint256);
 
-	/**
-	 * @dev Returns true if and only if the function is running in the constructor
-	 **/
-	function isConstructor() private view returns (bool) {
-		// extcodesize checks the size of the code stored in an address, and
-		// address returns the current address. Since the code is still not
-		// deployed when running a constructor, any checks on its code size will
-		// yield zero, making it an effective way to detect if a contract is
-		// under construction or not.
-		uint256 cs;
-		//solium-disable-next-line
-		assembly {
-			cs := extcodesize(address())
+	function _disableInitializers() internal virtual {
+		require(!initializing, "Initializable: contract is initializing");
+		if (!initialized) {
+			initialized = true;
 		}
-		return cs == 0;
 	}
 
 	// Reserved storage space to allow for layout changes in the future.

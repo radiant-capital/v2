@@ -162,6 +162,8 @@ interface ILendingPool {
 		uint256 variableBorrowIndex
 	);
 
+	function initialize(ILendingPoolAddressesProvider provider) external;
+
 	/**
 	 * @dev Deposits an `amount` of underlying asset into the reserve, receiving in return overlying aTokens.
 	 * - E.g. User deposits 100 USDC and gets in return 100 aUSDC

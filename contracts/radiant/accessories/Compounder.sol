@@ -1,69 +1,135 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.12;
 
-import "@uniswap/lib/contracts/interfaces/IUniswapV2Router.sol";
-import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
-import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
-import "@openzeppelin/contracts-upgradeable/access/OwnableUpgradeable.sol";
-import "@openzeppelin/contracts-upgradeable/security/PausableUpgradeable.sol";
+import {IUniswapV2Router} from "@uniswap/lib/contracts/interfaces/IUniswapV2Router.sol";
+import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
+import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
+import {OwnableUpgradeable} from "@openzeppelin/contracts-upgradeable/access/OwnableUpgradeable.sol";
+import {PausableUpgradeable} from "@openzeppelin/contracts-upgradeable/security/PausableUpgradeable.sol";
 
-import "../../interfaces/IAToken.sol";
-import "../../interfaces/IMultiFeeDistribution.sol";
-import "../../interfaces/ILendingPoolAddressesProvider.sol";
-import "../../interfaces/IAaveOracle.sol";
-import "../../interfaces/ILendingPool.sol";
-import "../../interfaces/ILockZap.sol";
-import "../../interfaces/IPriceProvider.sol";
-import "../../interfaces/IFeeDistribution.sol";
-import "../../interfaces/IERC20DetailedBytes.sol";
-import "../../interfaces/IMintableToken.sol";
-import "../../interfaces/IBountyManager.sol";
+import {IAToken} from "../../interfaces/IAToken.sol";
+import {IMultiFeeDistribution} from "../../interfaces/IMultiFeeDistribution.sol";
+import {ILendingPoolAddressesProvider} from "../../interfaces/ILendingPoolAddressesProvider.sol";
+import {IAaveOracle} from "../../interfaces/IAaveOracle.sol";
+import {ILendingPool} from "../../interfaces/ILendingPool.sol";
+import {ILockZap} from "../../interfaces/ILockZap.sol";
+import {IPriceProvider} from "../../interfaces/IPriceProvider.sol";
+import {IFeeDistribution} from "../../interfaces/IFeeDistribution.sol";
+import {IMintableToken} from "../../interfaces/IMintableToken.sol";
+import {IBountyManager} from "../../interfaces/IBountyManager.sol";
 
+/// @title Compounder Contract
+/// @author Radiant
 contract Compounder is OwnableUpgradeable, PausableUpgradeable {
 	using SafeERC20 for IERC20;
 
+	/// @notice Reward data struct
 	struct RewardData {
 		address token;
 		uint256 amount;
 	}
 
-	event RewardBaseTokensUpdated(address[] _tokens);
+	/********************** Events ***********************/
 
+	/// @notice Emitted when routes are updated
 	event RoutesUpdated(address _token, address[] _routes);
 
-	uint256 public constant PERCENT_DIVISOR = 10000;
-	uint256 public compoundFee;
-	uint256 public slippageLimit;
+	/// @notice Emitted when bounty manager is updated
+	event BountyManagerUpdated(address indexed _manager);
 
+	/// @notice Emitted when compounding fee is updated
+	event CompoundFeeUpdated(uint256 indexed _compoundFee);
+
+	/********************** Errors ***********************/
+	error AddressZero();
+
+	error InvalidCompoundFee();
+
+	error InvalidSlippage();
+
+	error NotBountyManager();
+
+	error NotEligible();
+
+	error InsufficientStakeAmount();
+
+	error ArrayLengthMismatch();
+
+	error SwapFailed(address asset, uint256 amount);
+
+	/// @notice The maximum slippage limit
+	/// @dev The max slippage should be equal to the max slippage of the LockZap contract, otherwise transactions could revert
+	uint256 public constant MAX_SLIPPAGE = 9000; // 10%
+
+	/// @notice Percent divisor which is equal to 100%
+	uint256 public constant PERCENT_DIVISOR = 10000;
+	uint256 public constant MAX_COMPOUND_FEE = 2000;
+	uint256 public constant MIN_DELAY = 1 days;
+	/// @notice Fee of compounding
+	uint256 public compoundFee;
+
+	/// @notice RDNT token address
 	IMintableToken public rdntToken;
-	address public baseToken; //token that rdnt is paired with in LP
+
+	/// @notice Token that RDNT is paired with in LP
+	address public baseToken;
+
+	/// @notice Lending Pool Addresses Provider contract address
 	address public addressProvider;
+
+	/// @notice Price provider contract address
 	address public priceProvider;
-	address[] public rewardBaseTokens;
+
+	/// @notice Swap route WETH -> RDNT
 	address[] public wethToRadiant;
+
+	/// @notice Swap router
 	address public uniRouter;
+
+	/// @notice MFD address
 	address public multiFeeDistribution;
+
+	/// @notice Lockzap address
 	address public lockZap;
+
+	/// @notice BountyManager address
 	address public bountyManager;
+
+	/// @notice Timestamp of last auto compounding
 	mapping(address => uint256) public lastAutocompound;
+
+	/// @notice Swap route from rewardToken to baseToken
 	mapping(address => address[]) public rewardToBaseRoute;
 
+	constructor() {
+		_disableInitializers();
+	}
+
+	/**
+	 * @notice Initializer
+	 * @param _uniRouter Address of swap router
+	 * @param _mfd Address of MFD
+	 * @param _baseToken Address of pair asset of RDNT LP
+	 * @param _addressProvider Address of LendingPoolAddressesProvider
+	 * @param _lockZap Address of LockZap contract
+	 * @param _compoundFee Compounding fee
+	 */
 	function initialize(
 		address _uniRouter,
 		address _mfd,
 		address _baseToken,
 		address _addressProvider,
 		address _lockZap,
-		uint256 _compoundFee,
-		uint256 _slippageLimit
-	) public initializer {
-		require(_uniRouter != address(0), "0x0 address");
-		require(_mfd != address(0), "0x0 address");
-		require(_baseToken != address(0), "0x0 address");
-		require(_addressProvider != address(0), "0x0 address");
-		require(_lockZap != address(0), "0x0 address");
-		require(_compoundFee > 0 && _compoundFee <= 2000, "Invalid compound fee");
-		require(_slippageLimit >= 8000 && _slippageLimit < PERCENT_DIVISOR, "Invalid slippage limit");
+		uint256 _compoundFee
+	) external initializer {
+		if (_uniRouter == address(0)) revert AddressZero();
+		if (_mfd == address(0)) revert AddressZero();
+		if (_baseToken == address(0)) revert AddressZero();
+		if (_addressProvider == address(0)) revert AddressZero();
+		if (_lockZap == address(0)) revert AddressZero();
+		if (_compoundFee == 0) revert InvalidCompoundFee();
+		if (_compoundFee > MAX_COMPOUND_FEE) revert InvalidCompoundFee();
 
 		uniRouter = _uniRouter;
 		multiFeeDistribution = _mfd;
@@ -74,78 +140,115 @@ contract Compounder is OwnableUpgradeable, PausableUpgradeable {
 		priceProvider = IMultiFeeDistribution(multiFeeDistribution).getPriceProvider();
 		wethToRadiant = [baseToken, address(rdntToken)];
 		compoundFee = _compoundFee;
-		slippageLimit = _slippageLimit;
 		__Ownable_init();
 		__Pausable_init();
 	}
 
-	function pause() public onlyOwner {
+	/**
+	 * @notice Pause contract
+	 */
+	function pause() external onlyOwner {
 		_pause();
 	}
 
-	function unpause() public onlyOwner {
+	/**
+	 * @notice Unpause contract
+	 */
+	function unpause() external onlyOwner {
 		_unpause();
 	}
 
-	function addRewardBaseTokens(address[] memory _tokens) external onlyOwner {
-		rewardBaseTokens = _tokens;
-		emit RewardBaseTokensUpdated(_tokens);
-	}
-
+	/**
+	 * @notice Set swap routes
+	 * @param _token Token for swap
+	 * @param _routes Swap route for token
+	 */
 	function setRoutes(address _token, address[] memory _routes) external onlyOwner {
 		rewardToBaseRoute[_token] = _routes;
 		emit RoutesUpdated(_token, _routes);
 	}
 
+	/**
+	 * @notice Set bounty manager
+	 * @param _manager Bounty manager address
+	 */
 	function setBountyManager(address _manager) external onlyOwner {
-		require(_manager != address(0), "bountyManager is 0 address");
+		if (_manager == address(0)) revert AddressZero();
 		bountyManager = _manager;
+		emit BountyManagerUpdated(_manager);
 	}
 
+	/**
+	 * @notice Sets the fee for compounding.
+	 * @param _compoundFee fee ratio for compounding
+	 */
 	function setCompoundFee(uint256 _compoundFee) external onlyOwner {
-		require(_compoundFee > 0 && _compoundFee <= 2000, "Invalid compound fee");
+		if (_compoundFee == 0) revert InvalidCompoundFee();
+		if (_compoundFee > MAX_COMPOUND_FEE) revert InvalidCompoundFee();
 		compoundFee = _compoundFee;
+		emit CompoundFeeUpdated(_compoundFee);
 	}
 
-	function setSlippageLimit(uint256 _slippageLimit) external onlyOwner {
-		require(_slippageLimit >= 8000 && _slippageLimit < PERCENT_DIVISOR, "Invalid slippage limit");
-		slippageLimit = _slippageLimit;
-	}
-
-	function _claimAndSwapToBase(address _user) internal returns (uint256) {
+	/**
+	 * @notice Claim and swap them into base token.
+	 * @param _user User whose rewards are compounded into dLP
+	 * @param tokens Tokens to claim and turn into dLP
+	 * @param amts Amounts of each token to be claimed and turned into dLP
+	 * @return Total base token amount
+	 */
+	function _claimAndSwapToBase(
+		address _user,
+		address[] memory tokens,
+		uint256[] memory amts
+	) internal returns (uint256) {
 		IMultiFeeDistribution mfd = IMultiFeeDistribution(multiFeeDistribution);
 		mfd.claimFromConverter(_user);
 		ILendingPool lendingPool = ILendingPool(ILendingPoolAddressesProvider(addressProvider).getLendingPool());
 
-		for (uint256 i = 0; i < rewardBaseTokens.length; i++) {
-			uint256 balance = IERC20(rewardBaseTokens[i]).balanceOf(address(this));
+		uint256 length = tokens.length;
+		for (uint256 i; i < length; i++) {
+			uint256 balance = amts[i];
 			if (balance == 0) {
 				continue;
 			}
-			address underlying = IAToken(rewardBaseTokens[i]).UNDERLYING_ASSET_ADDRESS();
-			uint256 amount = lendingPool.withdraw(underlying, type(uint256).max, address(this));
 
-			if (underlying != baseToken) {
-				IERC20(underlying).safeApprove(uniRouter, amount);
+			address tokenToTrade = tokens[i];
+			uint256 amount;
+			try lendingPool.withdraw(tokenToTrade, type(uint256).max, address(this)) returns (uint256 withdrawnAmt) {
+				amount = withdrawnAmt;
+			} catch {
+				amount = balance;
+			}
+
+			if (tokenToTrade != baseToken) {
+				IERC20(tokenToTrade).forceApprove(uniRouter, amount);
 				try
 					IUniswapV2Router(uniRouter).swapExactTokensForTokens(
 						amount,
 						0,
-						rewardToBaseRoute[underlying],
+						rewardToBaseRoute[tokenToTrade],
 						address(this),
-						block.timestamp + 600
+						block.timestamp
 					)
-				{} catch {}
+				{} catch {
+					revert SwapFailed(tokenToTrade, amount);
+				}
 			}
 		}
 		return IERC20(baseToken).balanceOf(address(this));
 	}
 
-	function _convertBaseToLPandStake(address _user) internal returns (uint256 liquidity) {
+	/**
+	 * @notice Converts base token to lp token and stake them.
+	 * @param _user User for this action
+	 * @param _slippage maximum tolerated slippage for any occurring swaps
+	 * @return liquidity LP token amount
+	 */
+	function _convertBaseToLPandStake(address _user, uint256 _slippage) internal returns (uint256 liquidity) {
 		uint256 baseBal = IERC20(baseToken).balanceOf(address(this));
 		if (baseBal != 0) {
-			IERC20(baseToken).safeApprove(lockZap, baseBal);
-			liquidity = ILockZap(lockZap).zapOnBehalf(false, baseBal, 0, _user);
+			IERC20(baseToken).forceApprove(lockZap, baseBal);
+			liquidity = ILockZap(lockZap).zapOnBehalf(false, address(0), baseBal, 0, _user, _slippage);
 		}
 	}
 
@@ -154,8 +257,10 @@ contract Compounder is OwnableUpgradeable, PausableUpgradeable {
 	 * @dev Can be auto compound or manual compound
 	 * @param _user user address
 	 * @param _execute whether to execute txn, or just quote (expected amount out for bounty executor)
+	 * @param _slippage that shouldn't be exceeded when performing swaps
+	 * @return fee amount
 	 */
-	function claimCompound(address _user, bool _execute) public returns (uint256 fee) {
+	function claimCompound(address _user, bool _execute, uint256 _slippage) public returns (uint256 fee) {
 		if (paused()) {
 			return 0;
 		}
@@ -166,33 +271,43 @@ contract Compounder is OwnableUpgradeable, PausableUpgradeable {
 		uint256 noSlippagePendingEth = _quoteSwapWithOracles(tokens, amts, baseToken);
 
 		if (isAutoCompound) {
-			require(msg.sender == bountyManager, "!bountymanager");
+			_slippage = IMultiFeeDistribution(multiFeeDistribution).userSlippage(_user);
+		}
+		if (_slippage == 0) {
+			_slippage = MAX_SLIPPAGE;
+		}
+		if (_slippage < MAX_SLIPPAGE || _slippage >= PERCENT_DIVISOR) revert InvalidSlippage();
+
+		if (isAutoCompound) {
+			if (msg.sender != bountyManager) revert NotBountyManager();
 			bool eligible = isEligibleForAutoCompound(_user, noSlippagePendingEth);
 			if (!eligible) {
 				if (_execute) {
-					revert("not eligible for autocompound");
+					revert NotEligible();
 				} else {
 					return (0);
 				}
 			}
 		} else {
-			require(isEligibleForCompound(noSlippagePendingEth), "min stake amt not met");
+			if (!isEligibleForCompound(noSlippagePendingEth)) revert InsufficientStakeAmount();
 		}
 
 		if (!_execute) {
-			uint256 pendingInRdnt = _wethToRdnt(noSlippagePendingEth, _execute);
-			fee = (pendingInRdnt * compoundFee) / PERCENT_DIVISOR;
-			return fee;
+			if (isAutoCompound) {
+				return _wethToRdnt((noSlippagePendingEth * compoundFee) / PERCENT_DIVISOR, _execute, MAX_SLIPPAGE);
+			} else {
+				return 0;
+			}
 		}
 
-		uint256 actualWethAfterSwap = _claimAndSwapToBase(_user);
-		require((PERCENT_DIVISOR * actualWethAfterSwap) / noSlippagePendingEth >= slippageLimit, "too much slippage");
+		uint256 actualWethAfterSwap = _claimAndSwapToBase(_user, tokens, amts);
+		if ((PERCENT_DIVISOR * actualWethAfterSwap) / noSlippagePendingEth < _slippage) revert InvalidSlippage();
 
 		if (isAutoCompound) {
-			fee = _wethToRdnt(((actualWethAfterSwap * compoundFee) / PERCENT_DIVISOR), _execute);
+			fee = _wethToRdnt(((actualWethAfterSwap * compoundFee) / PERCENT_DIVISOR), _execute, MAX_SLIPPAGE);
 		}
 
-		_convertBaseToLPandStake(_user);
+		_convertBaseToLPandStake(_user, _slippage);
 
 		if (isAutoCompound) {
 			rdntToken.approve(bountyManager, fee);
@@ -200,10 +315,20 @@ contract Compounder is OwnableUpgradeable, PausableUpgradeable {
 		}
 	}
 
-	function selfCompound() external returns (uint256 fee) {
-		fee = claimCompound(msg.sender, true);
+	/**
+	 * @notice Compound `msg.sender`'s rewards.
+	 * @param _slippage that shouldn't be exceeded when performing swaps
+	 */
+	function selfCompound(uint256 _slippage) external {
+		claimCompound(msg.sender, true, _slippage);
 	}
 
+	/**
+	 * @notice Returns the pending rewards of the `_user`
+	 * @param _user owner of rewards
+	 * @return tokens array of reward token addresses
+	 * @return amts array of reward amounts
+	 */
 	function viewPendingRewards(address _user) public view returns (address[] memory tokens, uint256[] memory amts) {
 		IFeeDistribution.RewardData[] memory pending = IMultiFeeDistribution(multiFeeDistribution).claimableRewards(
 			_user
@@ -211,51 +336,87 @@ contract Compounder is OwnableUpgradeable, PausableUpgradeable {
 		tokens = new address[](pending.length - 1);
 		amts = new uint256[](pending.length - 1);
 		uint256 index;
-		for (uint256 i = 0; i < pending.length; i++) {
+		uint256 length = pending.length;
+		for (uint256 i; i < length; ) {
 			if (pending[i].token != address(rdntToken)) {
-				tokens[index] = IAToken(pending[i].token).UNDERLYING_ASSET_ADDRESS();
+				try IAToken(pending[i].token).UNDERLYING_ASSET_ADDRESS() returns (address underlyingAddress) {
+					tokens[index] = underlyingAddress;
+				} catch {
+					tokens[index] = pending[i].token;
+				}
 				amts[index] = pending[i].amount;
-				index++;
+				unchecked {
+					index++;
+				}
+			}
+			unchecked {
+				i++;
 			}
 		}
 	}
 
+	/**
+	 * @notice Estimate the out tokens amount.
+	 * @param _in token address
+	 * @param _out token address
+	 * @param _amtIn amount of input token
+	 * @return tokensOut amount of output
+	 */
 	function _estimateTokensOut(address _in, address _out, uint256 _amtIn) internal view returns (uint256 tokensOut) {
 		IAaveOracle oracle = IAaveOracle(ILendingPoolAddressesProvider(addressProvider).getPriceOracle());
 		uint256 priceInAsset = oracle.getAssetPrice(_in); //USDC: 100000000
 		uint256 priceOutAsset = oracle.getAssetPrice(_out); //WETH: 153359950000
-		uint256 decimalsIn = IERC20DetailedBytes(_in).decimals();
-		uint256 decimalsOut = IERC20DetailedBytes(_out).decimals();
+		uint256 decimalsIn = IERC20Metadata(_in).decimals();
+		uint256 decimalsOut = IERC20Metadata(_out).decimals();
 		tokensOut = (_amtIn * priceInAsset * (10 ** decimalsOut)) / (priceOutAsset * (10 ** decimalsIn));
 	}
 
+	/**
+	 * @notice Estimate the out tokens amount.
+	 * @param _in array of input token address
+	 * @param _amtsIn amount of input tokens
+	 * @return amtOut Sum of outputs
+	 */
 	function _quoteSwapWithOracles(
 		address[] memory _in,
 		uint256[] memory _amtsIn,
 		address _out
 	) internal view returns (uint256 amtOut) {
-		require(_in.length == _amtsIn.length, "length mismatch");
+		if (_in.length != _amtsIn.length) revert ArrayLengthMismatch();
 		uint256 length = _in.length;
-		for (uint i = 0; i < length; i++) {
+		for (uint256 i; i < length; ) {
 			amtOut += _estimateTokensOut(_in[i], _out, _amtsIn[i]);
+			unchecked {
+				i++;
+			}
 		}
 	}
 
-	function _wethToRdnt(uint256 _wethIn, bool _execute) internal returns (uint256 rdntOut) {
+	/**
+	 * @notice Swap WETH to RDNT.
+	 * @param _wethIn WETH input amount
+	 * @param _execute Option to excute this action or not
+	 * @param _slippageLimit User defined slippage limit
+	 * @return rdntOut Output RDNT amount
+	 */
+	function _wethToRdnt(uint256 _wethIn, bool _execute, uint256 _slippageLimit) internal returns (uint256 rdntOut) {
+		if (_execute) {
+			IPriceProvider(priceProvider).update();
+		}
 		uint256 rdntPrice = IPriceProvider(priceProvider).getTokenPrice();
 		if (_wethIn != 0) {
 			if (_execute) {
-				IERC20(baseToken).safeApprove(uniRouter, _wethIn);
-				uint256[] memory amounts = IUniswapV2Router01(uniRouter).swapExactTokensForTokens(
+				IERC20(baseToken).forceApprove(uniRouter, _wethIn);
+				uint256[] memory amounts = IUniswapV2Router(uniRouter).swapExactTokensForTokens(
 					_wethIn,
 					0,
 					wethToRadiant,
 					address(this),
-					block.timestamp + 600
+					block.timestamp
 				);
 				rdntOut = amounts[amounts.length - 1];
 			} else {
-				uint256[] memory amounts = IUniswapV2Router01(uniRouter).getAmountsOut(
+				uint256[] memory amounts = IUniswapV2Router(uniRouter).getAmountsOut(
 					_wethIn, //amt in
 					wethToRadiant
 				);
@@ -263,9 +424,13 @@ contract Compounder is OwnableUpgradeable, PausableUpgradeable {
 			}
 		}
 		uint256 ethValueOfRDNT = rdntPrice * rdntOut;
-		require(ethValueOfRDNT / 10 ** 8 >= (_wethIn * slippageLimit) / 10000, "too much slippage");
+		if (ethValueOfRDNT / 10 ** 8 < (_wethIn * _slippageLimit) / PERCENT_DIVISOR) revert InvalidSlippage();
 	}
 
+	/**
+	 * @notice Returns minimum stake amount in ETH
+	 * @return minStakeAmtEth Minimum stake amount in ETH
+	 */
 	function autocompoundThreshold() public view returns (uint256 minStakeAmtEth) {
 		IPriceProvider priceProv = IPriceProvider(priceProvider);
 
@@ -275,10 +440,16 @@ contract Compounder is OwnableUpgradeable, PausableUpgradeable {
 		minStakeAmtEth = (minStakeLpAmt * lpPriceEth) / (10 ** priceProv.decimals());
 	}
 
+	/**
+	 * @notice Returns if user is eligbile for auto compounding
+	 * @param _user address
+	 * @param _pending amount
+	 * @return True or False
+	 */
 	function isEligibleForAutoCompound(address _user, uint256 _pending) public view returns (bool) {
 		bool delayComplete = true;
 		if (lastAutocompound[_user] != 0) {
-			delayComplete = (block.timestamp - lastAutocompound[_user]) >= 1 days;
+			delayComplete = (block.timestamp - lastAutocompound[_user]) >= MIN_DELAY;
 		}
 		return
 			IMultiFeeDistribution(multiFeeDistribution).autocompoundEnabled(_user) &&
@@ -286,18 +457,39 @@ contract Compounder is OwnableUpgradeable, PausableUpgradeable {
 			delayComplete;
 	}
 
+	/**
+	 * @notice Returns if pending amount is elgible for auto compounding
+	 * @param _pending amount
+	 * @return eligible True or False
+	 */
 	function isEligibleForCompound(uint256 _pending) public view returns (bool eligible) {
 		eligible = _pending >= autocompoundThreshold();
 	}
 
-	function userEligibleForCompound(address _user) public view returns (bool eligible) {
-		(address[] memory tokens, uint256[] memory amts) = viewPendingRewards(_user);
-		uint256 pendingEth = _quoteSwapWithOracles(tokens, amts, baseToken);
-		eligible = pendingEth >= autocompoundThreshold();
+	/**
+	 * @notice Returns if the user is eligible for auto compound
+	 * @param _user address
+	 * @return eligible `true` or `false`
+	 */
+	function userEligibleForCompound(address _user) external view returns (bool eligible) {
+		eligible = _userEligibleForCompound(_user);
 	}
 
-	function selfEligibleCompound() public view returns (bool eligible) {
-		(address[] memory tokens, uint256[] memory amts) = viewPendingRewards(msg.sender);
+	/**
+	 * @notice Returns if the `msg.sender` is eligible for self compound
+	 * @return eligible `true` or `false`
+	 */
+	function selfEligibleCompound() external view returns (bool eligible) {
+		eligible = _userEligibleForCompound(msg.sender);
+	}
+
+	/**
+	 * @notice Returns if the user is eligible for auto compound
+	 * @param _user address the be checked
+	 * @return eligible `true` if eligible or `false` if not
+	 */
+	function _userEligibleForCompound(address _user) internal view returns (bool eligible) {
+		(address[] memory tokens, uint256[] memory amts) = viewPendingRewards(_user);
 		uint256 pendingEth = _quoteSwapWithOracles(tokens, amts, baseToken);
 		eligible = pendingEth >= autocompoundThreshold();
 	}

@@ -2,7 +2,7 @@
 pragma solidity 0.8.12;
 
 interface ICompounder {
-	function claimCompound(address _user, bool _execute) external returns (uint256 tokensOut);
+	function claimCompound(address _user, bool _execute, uint256 _slippage) external returns (uint256 tokensOut);
 
 	function viewPendingRewards(address user) external view returns (address[] memory tokens, uint256[] memory amts);
 
